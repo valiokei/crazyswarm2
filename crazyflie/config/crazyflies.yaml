@@ -15,10 +15,10 @@ robots:
     #     frequency: 10 # Hz
     #     vars:
     #       [
-    #         "Dipole_model.MR_V_0",
-    #         "Dipole_model.MR_V_1",
-    #         "Dipole_model.MR_V_2",
-    #         "Dipole_model.MR_V_3",
+    #         "Dipole_Model.MR_V_0",
+    #         "Dipole_Model.MR_V_1",
+    #         "Dipole_Model.MR_V_2",
+    #         "Dipole_Model.MR_V_3",
     #       ]
   cf5:
     enabled: false
@@ -83,17 +83,26 @@ all:
       # remove to disable default topic
       pose:
         frequency: 10 # Hz
-      status:
-        frequency: 1 # Hz
+      # status:
+      #   frequency: 1 # Hz
     custom_topics:
-      Voltages:
-        frequency: 10 # Hz
+      VoltagesRaw:
+        frequency: 5 # Hz
         vars:
           [
-            "MAGNETIC_VOLTAGES.Nero",
-            "MAGNETIC_VOLTAGES.Giallo",
-            "MAGNETIC_VOLTAGES.Grigio",
-            "MAGNETIC_VOLTAGES.Rosso",
+            "Dipole_Model.MR_V_0",
+            "Dipole_Model.MR_V_1",
+            "Dipole_Model.MR_V_2",
+            "Dipole_Model.MR_V_3",
+          ]
+      VoltagesCalibrated:
+        frequency: 5 # Hz
+        vars:
+          [
+            "Dipole_Model.MC_V_0",
+            "Dipole_Model.MC_V_1",
+            "Dipole_Model.MC_V_2",
+            "Dipole_Model.MC_V_3",
           ]
     #  topic_name2:
     #    frequency: 1 # Hz
