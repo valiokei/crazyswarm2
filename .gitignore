@@ -4,3 +4,4 @@ crazyswarm2_sim_webots/
 *.o
 *~
 /.vscode
+/cache
