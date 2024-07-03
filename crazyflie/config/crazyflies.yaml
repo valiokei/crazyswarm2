@@ -3,7 +3,7 @@ robots:
   cf21:
     enabled: true
     uri: radio://0/90/2M/E7E7E7E7E6
-    initial_position: [0.001, 0.001, 0.01]
+    initial_position: [0.00, 0.00, 0.0]
     type: cf21 # see robot_types
     firmware_params:
       stabilizer:
@@ -11,6 +11,7 @@ robots:
         controller: 2 # 1: PID, 2: mellinger
     firmware_logging:
       enabled: true
+      verbosity: 2
       default_topics:
         # remove to disable default topic
         pose:
@@ -18,24 +19,24 @@ robots:
         # status:
         #   frequency: 1 # Hz
       custom_topics:
-        # VoltagesRaw:
-        #   frequency: 1 # Hz
-        #   vars:
-        #     [
-        #       "Dipole_Model.MR_V_0",
-        #       "Dipole_Model.MR_V_1",
-        #       "Dipole_Model.MR_V_2",
-        #       "Dipole_Model.MR_V_3",
-        #     ]
-        # VoltagesCalibrated:
-        #   frequency: 5 # Hz
-        #   vars:
-        #     [
-        #       "Dipole_Model.MC_V_0",
-        #       "Dipole_Model.MC_V_1",
-        #       "Dipole_Model.MC_V_2",
-        #       "Dipole_Model.MC_V_3",
-        #     ]
+        VoltagesRaw:
+          frequency: 5 # Hz
+          vars:
+            [
+              "Dipole_Model.MR_V_0",
+              "Dipole_Model.MR_V_1",
+              "Dipole_Model.MR_V_2",
+              "Dipole_Model.MR_V_3",
+            ]
+        VoltagesCalibrated:
+          frequency: 50 # Hz
+          vars:
+            [
+              "Dipole_Model.MC_V_0",
+              "Dipole_Model.MC_V_1",
+              "Dipole_Model.MC_V_2",
+              "Dipole_Model.MC_V_3",
+            ]
         TagOrientation:
           frequency: 5 # Hz
           vars:
@@ -44,33 +45,33 @@ robots:
               "Dipole_Model.T_or_1",
               "Dipole_Model.T_or_2",
             ]
-        # Derivates_x:
-        #   frequency: 5 # Hz
-        #   vars:
-        #     [
-        #       "Dipole_Model.D_x_0",
-        #       "Dipole_Model.D_x_1",
-        #       "Dipole_Model.D_x_2",
-        #       "Dipole_Model.D_x_3",
-        #     ]
-        # Derivates_y:
-        #   frequency: 5 # Hz
-        #   vars:
-        #     [
-        #       "Dipole_Model.D_y_0",
-        #       "Dipole_Model.D_y_1",
-        #       "Dipole_Model.D_y_2",
-        #       "Dipole_Model.D_y_3",
-        #     ]
-        # Derivates_z:
-        #   frequency: 5 # Hz
-        #   vars:
-        #     [
-        #       "Dipole_Model.D_z_0",
-        #       "Dipole_Model.D_z_1",
-        #       "Dipole_Model.D_z_2",
-        #       "Dipole_Model.D_z_3",
-        #     ]
+        Derivates_x:
+          frequency: 5 # Hz
+          vars:
+            [
+              "Dipole_Model.D_x_0",
+              "Dipole_Model.D_x_1",
+              "Dipole_Model.D_x_2",
+              "Dipole_Model.D_x_3",
+            ]
+        Derivates_y:
+          frequency: 5 # Hz
+          vars:
+            [
+              "Dipole_Model.D_y_0",
+              "Dipole_Model.D_y_1",
+              "Dipole_Model.D_y_2",
+              "Dipole_Model.D_y_3",
+            ]
+        Derivates_z:
+          frequency: 5 # Hz
+          vars:
+            [
+              "Dipole_Model.D_z_0",
+              "Dipole_Model.D_z_1",
+              "Dipole_Model.D_z_2",
+              "Dipole_Model.D_z_3",
+            ]
         Predicted_Volts:
           frequency: 5 # Hz
           vars:
@@ -79,6 +80,40 @@ robots:
               "Dipole_Model.P_V_1",
               "Dipole_Model.P_V_2",
               "Dipole_Model.P_V_3",
+            ]
+        PoseInMyKalman_used:
+          frequency: 1 # Hz
+          vars:
+            [
+              "Dipole_Model.T_pred_x",
+              "Dipole_Model.T_pred_y",
+              "Dipole_Model.T_pred_z",
+            ]
+        PoseInMyKalman:
+          frequency: 1 # Hz
+          vars:
+            [
+              "Dipole_Model.T_pred_x_fk",
+              "Dipole_Model.T_pred_y_fk",
+              "Dipole_Model.T_pred_z_fk",
+            ]
+        Kalman_Errors:
+          frequency: 1 # Hz
+          vars:
+            [
+              "Dipole_Model.Er_1",
+              "Dipole_Model.Er_2",
+              "Dipole_Model.Er_3",
+              "Dipole_Model.Er_4",
+            ]
+        Stds:
+          frequency: 1 # Hz
+          vars:
+            [
+              "Dipole_Model.Nero_std",
+              "Dipole_Model.Giallo_std",
+              "Dipole_Model.Grigio_std",
+              "Dipole_Model.Rosso_std",
             ]
 # Definition of the various robot types
 robot_types:
@@ -105,21 +140,20 @@ robot_types:
     #      frequency: 1
     #      vars: ["acc.x", "acc.y", "acc.z"]
 
-  cf21_mocap_deck:
-    motion_capture:
-      enabled: false
-      # only if enabled; see motion_capture.yaml
-      marker: mocap_deck
-      dynamics: default
-    big_quad: false
-    battery:
-      voltage_warning: 3.8 # V
-      voltage_critical: 3.4 # V
+  # cf21_mocap_deck:
+  #   motion_capture:
+  #     enabled: false
+  #     # only if enabled; see motion_capture.yaml
+  #     marker: mocap_deck
+  #     dynamics: default
+  #   big_quad: false
+  #   battery:
+  #     voltage_warning: 3.8 # V
+  #     voltage_critical: 3.4 # V
 
-
-    # firmware_params:
-    #   kalman:
-    #     pNAcc_xy: 1.0 # default 0.5
+  # firmware_params:
+  #   kalman:
+  #     pNAcc_xy: 1.0 # default 0.5
 # global settings for all robots
 # all:
 #   # firmware logging for all drones (use robot_types/type_name to set per type, or
