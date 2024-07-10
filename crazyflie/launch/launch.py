@@ -16,6 +16,7 @@ def generate_launch_description():
         get_package_share_directory('crazyflie'),
         'config',
         'crazyflies.yaml')
+    print(crazyflies_yaml)
 
     with open(crazyflies_yaml, 'r') as ymlfile:
         crazyflies = yaml.safe_load(ymlfile)
