@@ -7,10 +7,10 @@ robots:
     type: cf21 # see robot_types
     # kalman:
     #   resetEstimation: 1
-    firmware_params:
-      stabilizer:
-        estimator: 2 # 1: complementary, 2: kalman
-        controller: 1 # 1: PID, 2: mellinger
+    # firmware_params:
+    #   stabilizer:
+    #     estimator: 2 # 1: complementary, 2: kalman
+    #     controller: 1 # 1: PID, 2: mellinger
     firmware_logging:
       enabled: true
       verbosity: 1
@@ -20,122 +20,138 @@ robots:
           frequency: 5 # Hz
         # status:
         #   frequency: 1 # Hz
-      # custom_topics:
-      # OptimizationPosition:
-      #   frequency: 5 # Hz
-      #   vars:
-      #     [
-      #       "Optimization_Model.T_x",
-      #       "Optimization_Model.T_y",
-      #       "Optimization_Model.T_z",
-      #     ]
-      # InputPoints:
-      #   frequency: 1 # Hz
-      #   vars:
-      #     [
-      #       "Optimization_Model.Inpt_x",
-      #       "Optimization_Model.Inpt_y",
-      #       "Optimization_Model.Inpt_z",
-      #     ]
-      # Noise:
-      #   frequency: 1 # Hz
-      #   vars: ["Optimization_Model.noise"]
-      # VoltagesRaw:
-      #   frequency: 5 # Hz
-      #   vars:
-      #     [
-      #       "Dipole_Model.MR_V_0",
-      #       "Dipole_Model.MR_V_1",
-      #       "Dipole_Model.MR_V_2",
-      #       "Dipole_Model.MR_V_3",
-      #     ]
-      # VoltagesCalibrated:
-      #   frequency: 10 # Hz
-      #   vars:
-      #     [
-      #       "Dipole_Model.MC_V_0",
-      #       "Dipole_Model.MC_V_1",
-      #       "Dipole_Model.MC_V_2",
-      #       "Dipole_Model.MC_V_3",
-      #     ]
-      # TagOrientation:
-      #   frequency: 1 # Hz
-      #   vars:
-      #     [
-      #       "Dipole_Model.T_or_0",
-      #       "Dipole_Model.T_or_1",
-      #       "Dipole_Model.T_or_2",
-      #     ]
-      # Derivates_x:
-      #   frequency: 5 # Hz
-      #   vars:
-      #     [
-      #       "Dipole_Model.D_x_0",
-      #       "Dipole_Model.D_x_1",
-      #       "Dipole_Model.D_x_2",
-      #       "Dipole_Model.D_x_3",
-      #     ]
-      # Derivates_y:
-      #   frequency: 5 # Hz
-      #   vars:
-      #     [
-      #       "Dipole_Model.D_y_0",
-      #       "Dipole_Model.D_y_1",
-      #       "Dipole_Model.D_y_2",
-      #       "Dipole_Model.D_y_3",
-      #     ]
-      # Derivates_z:
-      #   frequency: 5 # Hz
-      #   vars:
-      #     [
-      #       "Dipole_Model.D_z_0",
-      #       "Dipole_Model.D_z_1",
-      #       "Dipole_Model.D_z_2",
-      #       "Dipole_Model.D_z_3",
-      #     ]
-      # Predicted_Volts:
-      #   frequency: 10 # Hz
-      #   vars:
-      #     [
-      #       "Dipole_Model.P_V_0",
-      #       "Dipole_Model.P_V_1",
-      #       "Dipole_Model.P_V_2",
-      #       "Dipole_Model.P_V_3",
-      #     ]
-      # PoseInMyKalman_used:
-      #   frequency: 1 # Hz
-      #   vars:
-      #     [
-      #       "Dipole_Model.T_pred_x",
-      #       "Dipole_Model.T_pred_y",
-      #       "Dipole_Model.T_pred_z",
-      #     ]
-      # PoseInMyKalman:
-      #   frequency: 1 # Hz
-      #   vars:
-      #     [
-      #       "Dipole_Model.T_pred_x_fk",
-      #       "Dipole_Model.T_pred_y_fk",
-      #       "Dipole_Model.T_pred_z_fk",
-      #     ]
-      # Kalman_Errors:
-      #   frequency: 1 # Hz
-      #   vars:
-      #     [
-      #       "Dipole_Model.Er_1",
-      #       "Dipole_Model.Er_2",
-      #       "Dipole_Model.Er_3",
-      #       "Dipole_Model.Er_4",
-      #     ]
-      # Stds:
-      #   frequency: 10 # Hz
-      #   vars:
-      #     [
-      #       "Dipole_Model.A0_N_std",
-      #       "Dipole_Model.A1_Gia_std",
-      #       "Dipole_Model.A2_Gr_std",
-      #       "Dipole_Model.A3_R_std",
-      #     ]
+      custom_topics:
+        OptimizationPosition:
+          frequency: 5 # Hz
+          vars:
+            [
+              "Optimization_Model.T_x",
+              "Optimization_Model.T_y",
+              "Optimization_Model.T_z",
+            ]
+        # InputPoints:
+        #   frequency: 1 # Hz
+        #   vars:
+        #     [
+        #       "Optimization_Model.Inpt_x",
+        #       "Optimization_Model.Inpt_y",
+        #       "Optimization_Model.Inpt_z",
+        #     ]
+        # Noise:
+        #   frequency: 1 # Hz
+        #   vars: ["Optimization_Model.noise"]
+        # VoltagesRaw:
+        #   frequency: 5 # Hz
+        #   vars:
+        #     [
+        #       "Dipole_Model.MR_V_0",
+        #       "Dipole_Model.MR_V_1",
+        #       "Dipole_Model.MR_V_2",
+        #       "Dipole_Model.MR_V_3",
+        #     ]
+        VoltagesCalibrated:
+          frequency: 5 # Hz
+          vars:
+            [
+              "Dipole_Model.M_V1",
+              "Dipole_Model.M_V2",
+              "Dipole_Model.M_V3",
+              "Dipole_Model.M_V4",
+            ]
+        Outliers_distances:
+          frequency: 5 # Hz
+          vars: ["Optimization_Model.Out_d", "Optimization_Model.Out_z"]
+        ZRange:
+          frequency: 5 # Hz
+          vars: ["range.zrange"]
+        # Saturations:
+        #   frequency: 5 # Hz
+        #   vars:
+        #     [
+        #       "Optimization_Model.Nero_sat",
+        #       "Optimization_Model.Giallo_sat",
+        #       "Optimization_Model.Grigio_sat",
+        #       "Optimization_Model.Rosso_sat",
+        #     ]
+
+        # TagOrientation:
+        #   frequency: 1 # Hz
+        #   vars:
+        #     [
+        #       "Dipole_Model.T_or_0",
+        #       "Dipole_Model.T_or_1",
+        #       "Dipole_Model.T_or_2",
+        #     ]
+        # Derivates_x:
+        #   frequency: 5 # Hz
+        #   vars:
+        #     [
+        #       "Dipole_Model.D_x_0",
+        #       "Dipole_Model.D_x_1",
+        #       "Dipole_Model.D_x_2",
+        #       "Dipole_Model.D_x_3",
+        #     ]
+        # Derivates_y:
+        #   frequency: 5 # Hz
+        #   vars:
+        #     [
+        #       "Dipole_Model.D_y_0",
+        #       "Dipole_Model.D_y_1",
+        #       "Dipole_Model.D_y_2",
+        #       "Dipole_Model.D_y_3",
+        #     ]
+        # Derivates_z:
+        #   frequency: 5 # Hz
+        #   vars:
+        #     [
+        #       "Dipole_Model.D_z_0",
+        #       "Dipole_Model.D_z_1",
+        #       "Dipole_Model.D_z_2",
+        #       "Dipole_Model.D_z_3",
+        #     ]
+        # Predicted_Volts:
+        #   frequency: 10 # Hz
+        #   vars:
+        #     [
+        #       "Dipole_Model.P_V1",
+        #       "Dipole_Model.P_V2",
+        #       "Dipole_Model.P_V3",
+        #       "Dipole_Model.P_V4",
+        #     ]
+        # PoseInMyKalman_used:
+        #   frequency: 1 # Hz
+        #   vars:
+        #     [
+        #       "Dipole_Model.T_pred_x",
+        #       "Dipole_Model.T_pred_y",
+        #       "Dipole_Model.T_pred_z",
+        #     ]
+        # PoseInMyKalman:
+        #   frequency: 1 # Hz
+        #   vars:
+        #     [
+        #       "Dipole_Model.T_pred_x_fk",
+        #       "Dipole_Model.T_pred_y_fk",
+        #       "Dipole_Model.T_pred_z_fk",
+        #     ]
+        # Kalman_Errors:
+        # frequency: 5 # Hz
+        # vars:
+        #   [
+        #     "Dipole_Model.ERR1",
+        #     "Dipole_Model.ERR2",
+        #     "Dipole_Model.ERR3",
+        #     "Dipole_Model.ERR4",
+        #   ]
+        # Stds:
+        #   frequency: 10 # Hz
+        #   vars:
+        #     [
+        #       "Dipole_Model.A0_N_std",
+        #       "Dipole_Model.A1_Gia_std",
+        #       "Dipole_Model.A2_Gr_std",
+        #       "Dipole_Model.A3_R_std",
+        #     ]
 # Definition of the various robot types
 robot_types:
   cf21:
@@ -223,9 +239,9 @@ all:
     #   solidGreen: 0 # if set to solid color
     #   solidRed: 0 # if set to solid color
     #   headlightEnable: 0
-    locSrv:
-      extPosStdDev: 1e-3
-      extQuatStdDev: 0.5e-1
+    # locSrv:
+    #   extPosStdDev: 1e-3
+    #   extQuatStdDev: 0.5e-1
 
   broadcasts:
     num_repeats: 15 # number of times broadcast commands are repeated

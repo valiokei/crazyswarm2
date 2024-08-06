@@ -1,9 +1,11 @@
 import os
 
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.conditions import IfCondition, LaunchConfigurationEquals
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
-import yaml
 
 
 def generate_launch_description():
@@ -42,6 +44,6 @@ def generate_launch_description():
             output='screen',
             parameters=[{'hover_height': 0.3},
                         {'incoming_twist_topic': '/cmd_vel'},
-                        {'robot_prefix': '/cf231'}]
-        ),
+                        {'robot_prefix': '/cf21'}]
+        )
     ])

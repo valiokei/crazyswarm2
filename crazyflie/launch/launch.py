@@ -82,11 +82,11 @@ def generate_launch_description():
         'teleop.yaml')
 
     return LaunchDescription([
-        DeclareLaunchArgument('backend', default_value='cpp'),
+        DeclareLaunchArgument('backend', default_value='cflib'),
         DeclareLaunchArgument('debug', default_value='True'),
         DeclareLaunchArgument('rviz', default_value='True'),
         DeclareLaunchArgument('gui', default_value='False'),
-        DeclareLaunchArgument('mocap', default_value='True'),
+        DeclareLaunchArgument('mocap', default_value='False'),
         DeclareLaunchArgument('server_yaml_file', default_value=''),
         DeclareLaunchArgument('teleop_yaml_file', default_value=''),
         DeclareLaunchArgument('mocap_yaml_file', default_value=''),
