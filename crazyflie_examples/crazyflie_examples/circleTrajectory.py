@@ -23,23 +23,27 @@ def main():
 
     TRIALS = 1
     TIMESCALE = 1.0
+    # TIMESCALE = 0.5
     for i in range(TRIALS):
         for cf in allcfs.crazyflies:
             cf.uploadTrajectory(0, 0, traj1)
 
-        allcfs.takeoff(targetHeight=0.3, duration=1.0)
-        timeHelper.sleep(2.0)
+        allcfs.takeoff(targetHeight=0.45, duration=3.0)
+        timeHelper.sleep(4.0)
         # for cf in allcfs.crazyflies:
         #     pos = np.array(cf.initialPosition) + np.array([0, 0, 0.0])
         #     cf.goTo(pos, 0, 2.0)
         # timeHelper.sleep(2.5)
 
         allcfs.startTrajectory(0, timescale=TIMESCALE)
-        timeHelper.sleep(traj1.duration * TIMESCALE)
+        timeHelper.sleep(traj1.duration * TIMESCALE+5.0)
         # allcfs.startTrajectory(0, timescale=TIMESCALE, reverse=True)
         # timeHelper.sleep(traj1.duration * TIMESCALE + 2.0)
 
-        allcfs.land(targetHeight=0.05, duration=1.0)
+
+
+        # TO TRY: provare a fare atterrare il drone usando direttamente la traiettoria fino a terra
+        allcfs.land(targetHeight=0.05, duration=2.0)
         timeHelper.sleep(3.0)
 
     # disable logging

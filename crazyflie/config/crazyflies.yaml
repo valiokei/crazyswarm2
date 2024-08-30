@@ -29,6 +29,14 @@ robots:
               "Optimization_Model.T_y",
               "Optimization_Model.T_z",
             ]
+        MyKalmanPosition:
+          frequency: 5 # Hz
+          vars:
+            [
+              "Optimization_Model.KF_x",
+              "Optimization_Model.KF_y",
+              "Optimization_Model.KF_z",
+            ]
         # InputPoints:
         #   frequency: 1 # Hz
         #   vars:
