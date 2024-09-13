@@ -170,8 +170,8 @@ robot_types:
     #   dynamics: default
     big_quad: false
     battery:
-      voltage_warning: 3.2 # V
-      voltage_critical: 3.0 # V
+      voltage_warning: 3.7 # V
+      voltage_critical: 3.5 # V
     # firmware_params:
     #   kalman:
     #     pNAcc_xy: 1.0 # default 0.5
