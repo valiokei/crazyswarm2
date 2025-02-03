@@ -414,7 +414,7 @@ class CrazyflieServer(Node):
                     self.swarm._cfs[link_uri].logging["custom_log_publisher"][log_group_name] = self.create_publisher(
                         LogDataGeneric, self.cf_dict[link_uri] + "/" + log_group_name, 10)
                     lg_custom = log_group_dict['log_config']
-                    self.get_logger().info(f'ciao{lg_custom}')
+                    self.get_logger().info(f'ciaooooooo{lg_custom}')
                     try:
                         cf.log.add_config(lg_custom)
                         lg_custom.data_received_cb.add_callback(

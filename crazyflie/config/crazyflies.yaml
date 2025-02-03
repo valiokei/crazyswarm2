@@ -28,8 +28,9 @@ robots:
               "Optimization_Model.T_x",
               "Optimization_Model.T_y",
               "Optimization_Model.T_z",
-              "Optimization_Model.Z_AVG",
-              "MyZRang.MyZRang"
+              # "Optimization_Model.Z_AVG",
+              # "MyZRang.MyZRang",
+              # "Optimization_Model.out"
             ]
         # MyKalmanPosition:
         #   frequency: 5 # Hz
@@ -68,12 +69,12 @@ robots:
               "Dipole_Model.M_V3",
               "Dipole_Model.M_V4",
             ]
-        Outliers_distances:
-          frequency: 5 # Hz
-          vars: ["Optimization_Model.Out_d", "Optimization_Model.Out_z"]
-        ZRange:
-          frequency: 5 # Hz
-          vars: ["range.zrange"]
+        # Outliers_distances:
+        #   frequency: 5 # Hz
+        #   vars: ["Optimization_Model.Out_d", "Optimization_Model.Out_z"]
+        # ZRange:
+        #   frequency: 5 # Hz
+        #   vars: ["range.zrange"]
         # Saturations:
         #   frequency: 5 # Hz
         #   vars:
@@ -252,6 +253,25 @@ all:
     # locSrv:
     #   extPosStdDev: 1e-3
     #   extQuatStdDev: 0.5e-1
+    deck:
+
+      # Z-RANGER DECK
+      targetFlyH: 0.30 # height of the drone from the robot base
+      HRobodog: 0.33 # height of the robot base from the ground
+      # dogXLim: 0.26 # robot base length
+      # dogYLim: 0.10 # robot base width
+      # xyMarg: 0.02 # hysterisis margin for the xy position
+      # zMarg: 0.05 # hysterisis margin for the z position
+      # blendMargin: 0.02 # hysterisis margin for the blend
+      # alpha: 0.1
+      DerivativeThresholdZ: 0.05
+
+
+      # FLOW DECK
+      coilXLimit: 0.2 # queste valgono per il flowdeck # queste definiscono la superficie del robodg non proprio quella delle ancore!!!
+      coilYLimit: 0.12  
+
+
 
   broadcasts:
     num_repeats: 15 # number of times broadcast commands are repeated

@@ -78,12 +78,6 @@
               - Optimization_Model.T_x
               - Optimization_Model.T_y
               - Optimization_Model.T_z
-            MyKalmanPosition:
-              frequency: 5
-              vars:
-              - Optimization_Model.KF_x
-              - Optimization_Model.KF_y
-              - Optimization_Model.KF_z
             VoltagesCalibrated:
               frequency: 5
               vars:
@@ -91,23 +85,14 @@
               - Dipole_Model.M_V2
               - Dipole_Model.M_V3
               - Dipole_Model.M_V4
-            Outliers_distances:
-              frequency: 5
-              vars:
-              - Optimization_Model.Out_d
-              - Optimization_Model.Out_z
-            ZRange:
-              frequency: 5
-              vars:
-              - range.zrange
     robot_types:
       cf21:
         motion_capture:
           enabled: false
         big_quad: false
         battery:
-          voltage_warning: 3.2
-          voltage_critical: 3.0
+          voltage_warning: 3.7
+          voltage_critical: 3.5
         firmware_logging:
           enabled: true
     all:
@@ -117,6 +102,12 @@
         stabilizer:
           estimator: 2
           controller: 1
+        deck:
+          targetFlyH: 0.3
+          HRobodog: 0.33
+          DerivativeThresholdZ: 0.05
+          coilXLimit: 0.2
+          coilYLimit: 0.12
       broadcasts:
         num_repeats: 15
         delay_between_repeats_ms: 1

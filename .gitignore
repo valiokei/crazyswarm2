@@ -6,4 +6,5 @@ crazyswarm2_sim_webots/
 /.vscode
 /cache
 # ADD FOLDER TO IGNORE
-/Rosbags
+/rosbags
+/.venv
