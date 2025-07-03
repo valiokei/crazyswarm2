@@ -254,22 +254,24 @@ all:
     #   extPosStdDev: 1e-3
     #   extQuatStdDev: 0.5e-1
     deck:
-
       # Z-RANGER DECK
-      targetFlyH: 0.30 # height of the drone from the robot base
-      HRobodog: 0.33 # height of the robot base from the ground
+      targetFlyH: 0.20 # height of the drone from the robot base
+      HRobodog: 0.25 # height of the robot base from the ground
       # dogXLim: 0.26 # robot base length
       # dogYLim: 0.10 # robot base width
       # xyMarg: 0.02 # hysterisis margin for the xy position
       # zMarg: 0.05 # hysterisis margin for the z position
       # blendMargin: 0.02 # hysterisis margin for the blend
       # alpha: 0.1
-      DerivativeThresholdZ: 0.05
-
+      DerivativeThresholdZ: 0.03
 
       # FLOW DECK
       coilXLimit: 0.2 # queste valgono per il flowdeck # queste definiscono la superficie del robodg non proprio quella delle ancore!!!
-      coilYLimit: 0.12  
+      coilYLimit: 0.12 
+    kalman:
+      resetEstimation: 1
+    # hlCommander:
+    #   vland: 0.1 # land velocity [m/s] default 0.5
 
 
 

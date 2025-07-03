@@ -31,7 +31,7 @@ def main():
     allcfs.setParam('usd.logging', 1)
 
 
-    timeHelper.sleep(2.0)
+    timeHelper.sleep(5.0)
     print("waiting before take off")
 
     # input('Press Enter to takeoff...')
@@ -88,45 +88,46 @@ def main():
 
         # # # # GO upper
         logging.info(f"Going Upper (t={time.time() - start_time:.2f}s)")
-        # pos =  np.array([0.05, -0.02, HEIGHT])
         pos =  np.array([0.0, 0.0, HEIGHT])
         cf.goTo(pos, 0, 1.5)
         timeHelper.sleep(2.0)
 
+        # #GO out
+        # logging.info(f"Going out (t={time.time() - start_time:.2f}s)")
+        # pos =  np.array([0.0, -DISTANCE, HEIGHT])
+        # cf.goTo(pos, 0, 1.0)
+        # timeHelper.sleep(2.5)
+
        
+
+        # start_time = time.time()
+        # while time.time() - start_time < 8:
+        #     # GO TO CENTER
+        #     pos =  np.array([0.0, -DISTANCE, HEIGHT])
+        #     cf.goTo(pos, 0, 1.0)
+        #     timeHelper.sleep(1.0)
+
         # # go out
         pos =  np.array([DISTANCE, 0.0, HEIGHT])
         cf.goTo(pos, 0, 4.0)
         timeHelper.sleep(4.0)
 
-        timeHelper.sleep(5.0)
+        timeHelper.sleep(10.0)
 
-        pos =  np.array([1.20, 0.0, HEIGHT])
-        cf.goTo(pos, 0, 4.0)
-        timeHelper.sleep(4.0)
-
-        timeHelper.sleep(5.0)
-
-        pos =  np.array([2.00, 0.0, HEIGHT])
-        cf.goTo(pos, 0, 4.0)
-        timeHelper.sleep(4.0)
-
-        timeHelper.sleep(5.0)
-
-        # # # GO TO CENTER
-        # pos =  np.array([0.00, 0.0, HEIGHT])
-        # cf.goTo(pos, 0, 7.0)
-        # timeHelper.sleep(8.0)
+        # # GO TO CENTER
+        pos =  np.array([0.05, 0.0, HEIGHT])
+        cf.goTo(pos, 0, 6.0)
+        timeHelper.sleep(7.0)
         
-        # # # # GO TO CENTER
-        # pos =  np.array([0.0, 0.0, 0.10])
-        # # pos =  np.array([0.00, 0.00, 0.15])
-        # cf.goTo(pos, 0, 0.5)
-        # timeHelper.sleep(1.0)
+        # # GO TO CENTER
+        pos =  np.array([0.0, 0.0, 0.15])
+        # pos =  np.array([0.00, 0.00, 0.15])
+        cf.goTo(pos, 0, 0.5)
+        timeHelper.sleep(1.0)
 
         logging.info(f"Landing all Crazyflies (t={time.time() - start_time:.2f}s)")
-        allcfs.land(targetHeight=0.08, duration=4.0)
-        timeHelper.sleep(5.0)
+        allcfs.land(targetHeight=0.08, duration=3.0)
+        timeHelper.sleep(3.0)
         logging.info(f"Landed (t={time.time() - start_time:.2f}s)")
 
     # disable logging
