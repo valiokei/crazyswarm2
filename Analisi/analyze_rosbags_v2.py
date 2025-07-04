@@ -8,14 +8,15 @@ Batch‑analyse ROS 2 Jazzy rosbags to compute the RMSE between:
 
 The script:
   1. Reads an Excel metadata file that lists all tests and associated rosbag folders.
-  2. Iterates (multiprocess) over each bag and extracts only the `/tf` topic to minimise I/O.
+  2. Iterates (multiprocess) over each bag and extracts the `/tf` and `/cf21/VoltagesCalibrated` topics.
   3. Synchronises the two pose streams (nearest‑neighbour within --sync-epsilon s).
   4. Computes RMSE & MAE per axis and overall, stores them in CSV.
   5. Generates publication‑ready plots (IEEE TRO compliant) in PNG & PDF.
   6. Creates 3D trajectory plots with anchor positions.
   7. Visualizes pointwise errors along the trajectory.
-  8. Computes standard deviation metrics.
-  9. Generates a summary figure with best scores per category.
+  8. Creates voltage plots for all 4 anchors over time.
+  9. Computes standard deviation metrics.
+  10. Generates a summary figure with best scores per category including voltage plots.
 
 Note: This version analyzes only EKF_CF vs Vicon (no cf21 or Opt transformations).
 
@@ -32,8 +33,6 @@ python analyze_rosbags.py --excel ETH.xlsx --root . --out results --workers 4
 # per mandare i risultati sulla cartel OneDrive condivisa
 python analyze_rosbags.py --excel '/mnt/c/Users/valio/OneDrive - Università degli Studi di Perugia (1)/ETH_Valerio_Magnetico/ROSBAGS/ETH.xlsx' --root '/mnt/c/Users/valio/OneDrive - Università degli Studi di Perugia (1)/ETH_Valerio_Magnetico/ROSBAGS' --out '/mnt/c/Users/valio/OneDrive - Università degli Studi di Perugia (1)/ETH_Valerio_Magnetico/risultati' --workers 4
 
-
-Author: ChatGPT (o3) – 2025‑06‑30
 """
 
 import argparse, os, pathlib, sys, math, multiprocessing as mp
@@ -54,6 +53,7 @@ from rosbag2_py import SequentialReader, StorageOptions, ConverterOptions
 
 # -------------------------  CONFIGURATION  -------------------------------- #
 TF_TOPIC            = '/tf'
+VOLTAGE_TOPIC       = '/cf21/VoltagesCalibrated'
 CH_REF_CHILD        = 'vicon/magnetic_drone/magnetic_drone'
 CH_REF_PARENT       = 'vicon/world'
 CH_EKF_CF_CHILD     = 'EKF_CF'
@@ -71,10 +71,12 @@ SYNC_EPSILON        = 0.01        # [s] max gap between reference & estimates
 PLOT_FONT_SIZE      = 9
 DPI                 = 300
 
-# IEEE Publication Style Colors
-VICON_COLOR         = '#1f77b4'   # Professional blue
-EKF_CF_COLOR        = '#d62728'   # Professional red
-ERROR_YLIM_MAX      = 1.0         # Maximum Y axis for error plots [m]
+# Plot axis limits for uniformity
+ERROR_PLOT_Y_LIM    = (-0.7, 0.7)    # Y-axis limits for error plots per axis
+ERROR_TOTAL_Y_LIM   = (0.0, 1.0)     # Y-axis limits for total error plot
+TRAJ_3D_X_LIM       = (-3.0, 3.0)    # X-axis limits for 3D trajectory plots
+TRAJ_3D_Y_LIM       = (-3.0, 3.0)    # Y-axis limits for 3D trajectory plots
+TRAJ_3D_Z_LIM       = (0.0, 2.5)     # Z-axis limits for 3D trajectory plots
 # ------------------------------------------------------------------------- #
 
 def read_excel_list(excel_path: str):
@@ -83,7 +85,7 @@ def read_excel_list(excel_path: str):
     header_row = df.iloc[0, 2:].reset_index(drop=True)
     data       = df.iloc[1:].reset_index(drop=True)
 
-    categories = data.iloc[:, 0].ffill()
+    categories = data.iloc[:, 0].fillna(method='ffill')
     labels     = data.iloc[:, 1]
     bag_cols   = data.iloc[:, 2:]
 
@@ -92,9 +94,12 @@ def read_excel_list(excel_path: str):
         lst = []
         for cell in row:
             if isinstance(cell, str) and 'rosbag2' in cell:
-                name = cell.strip()
-                # Append '_processed' suffix to rosbag folder names
-                lst.append(f"{name}_processed")
+                # Handle multiple rosbags separated by commas in the same cell
+                bag_names = [name.strip() for name in cell.split(',')]
+                for name in bag_names:
+                    if 'rosbag2' in name:
+                        # Append '_processed' suffix to rosbag folder names
+                        lst.append(f"{name}_processed")
         bag_lists.append(lst)
 
     out = pd.DataFrame({'category': categories,
@@ -111,40 +116,51 @@ def detect_storage_id(bag_dir: Path) -> str:
             return yaml.safe_load(f).get('storage_identifier', '')
     return ''       
 
-def rosbag_iter_tf(bag_path: pathlib.Path):
-    """Yield (time_sec, transform_msg) only for TF_TOPIC."""
+def rosbag_iter_topics(bag_path: pathlib.Path, topics):
+    """Yield (topic, time_sec, msg) for specified topics."""
     reader = SequentialReader()
-     # vuoto = autodetect
-
+    
     sid = detect_storage_id(bag_path)
-
+    
     storage_options   = StorageOptions(uri=str(bag_path), storage_id=sid)
     converter_options = ConverterOptions('', '')
     reader.open(storage_options, converter_options)
 
     topic_types = reader.get_all_topics_and_types()
-    tf_type     = None
-    for t in topic_types:
-        if t.name == TF_TOPIC:
-            tf_type = t.type
-            break
-    if tf_type is None:
-        raise RuntimeError(f"{bag_path}: no {TF_TOPIC} found")
-
-    msg_type = get_message(tf_type)
+    available_topics = {t.name: t.type for t in topic_types}
+    
+    # Check which topics are available
+    topics_to_read = []
+    for topic in topics:
+        if topic in available_topics:
+            topics_to_read.append(topic)
+        else:
+            print(f"Warning: Topic {topic} not found in bag {bag_path}")
+    
+    if not topics_to_read:
+        return
 
     while reader.has_next():
         (topic, data, t) = reader.read_next()
-        if topic != TF_TOPIC:  # fast path
+        if topic not in topics_to_read:
             continue
+        
+        msg_type = get_message(available_topics[topic])
         msg = deserialize_message(data, msg_type)
         stamp_sec = t / 1e9
-        for tf in msg.transforms:
-            yield stamp_sec, tf
+        yield topic, stamp_sec, msg
+
+# ------------------------------------------------------------------------- #
+def rosbag_iter_tf(bag_path: pathlib.Path):
+    """Yield (time_sec, transform_msg) only for TF_TOPIC."""
+    for topic, stamp_sec, msg in rosbag_iter_topics(bag_path, [TF_TOPIC]):
+        if topic == TF_TOPIC:
+            for tf in msg.transforms:
+                yield stamp_sec, tf
 
 # ------------------------------------------------------------------------- #
 def extract_streams(bag_dir: pathlib.Path):
-    """Return dict frame_name -> np.ndarray[[t,x,y,z]]."""
+    """Return dict frame_name -> np.ndarray[[t,x,y,z]], anchors dict, and voltage data."""
     streams = { 'ref': [], 'ekf_cf': [], 'dog': [] }
     anchors = {name: [] for name in ANCHOR_FRAMES}
     
@@ -187,10 +203,13 @@ def extract_streams(bag_dir: pathlib.Path):
         else:
             anchors[k] = np.empty((0,4))
     
-    return streams, anchors
+    # Extract voltage data
+    voltage_data = extract_voltage_data(bag_dir)
+    
+    return streams, anchors, voltage_data
 
 # ------------------------------------------------------------------------- #
-def apply_static_transform(streams, anchors):
+def apply_static_transform(streams, anchors, voltage_data):
     """Non applica più trasformazioni statiche dato che tutti i frame sono già in vicon/world."""
     # print("INFO: Trasformazione statica disabilitata - tutti i frame sono già in vicon/world")
     
@@ -202,7 +221,7 @@ def apply_static_transform(streams, anchors):
     # if streams['dog'].size > 0:
     #     print(f"DEBUG: Dog (vicon/world) - primo punto: {streams['dog'][0, 1:4]}")
     
-    return streams, anchors
+    return streams, anchors, voltage_data
 
 # ------------------------------------------------------------------------- #
 def align_streams(streams):
@@ -240,75 +259,53 @@ def compute_rmse(ref, est):
     return rmse, rmse_total, err
 
 # ------------------------------------------------------------------------- #
-def plot_3d_trajectory(t, ref, ekf_cf, anchors, output_path_3d, output_path_2d, 
-                       output_path_yz=None, output_path_xz=None):
-    """Create 3D trajectory plot in vicon/world frame and 2D projection plots."""
-    
-    # Calculate axis limits for uniform scaling
-    all_points = np.vstack([ref, ekf_cf])
-    x_min, x_max = all_points[:, 0].min(), all_points[:, 0].max()
-    y_min, y_max = all_points[:, 1].min(), all_points[:, 1].max()
-    z_min, z_max = all_points[:, 2].min(), all_points[:, 2].max()
-    
-    # Add margin (10% of range)
-    x_range = x_max - x_min
-    y_range = y_max - y_min
-    z_range = z_max - z_min
-    margin = 0.1
-    
-    x_lim = [x_min - margin * x_range, x_max + margin * x_range]
-    y_lim = [y_min - margin * y_range, y_max + margin * y_range]
-    z_lim = [z_min - margin * z_range, z_max + margin * z_range]
-    
+def compute_stddev(err):
+    """Compute standard deviation of the error."""
+    stddev_axis = np.std(err, axis=0)
+    stddev_total = np.std(np.sqrt(np.sum(err**2, axis=1)))
+    return stddev_axis, stddev_total
+
+# ------------------------------------------------------------------------- #
+def plot_3d_trajectory(t, ref, ekf_cf, anchors, output_path_3d, output_path_2d):
+    """Create 3D trajectory plot in vicon/world frame and 2D XY trajectory plot."""
     # 3D World frame plot
-    fig = plt.figure(figsize=(8, 6), dpi=DPI)
+    fig = plt.figure(figsize=(6, 6), dpi=DPI)
     ax = fig.add_subplot(111, projection='3d')
     
-    ax.plot(ref[:, 0], ref[:, 1], ref[:, 2], color=VICON_COLOR, linewidth=2.5, 
-            label='Vicon', alpha=0.9)
-    ax.plot(ekf_cf[:, 0], ekf_cf[:, 1], ekf_cf[:, 2], color=EKF_CF_COLOR, 
-            linewidth=2.0, linestyle='--', label='EKF_CF', alpha=0.9)
+    ax.plot(ref[:, 0], ref[:, 1], ref[:, 2], 'b-', linewidth=2, label='Vicon')
+    ax.plot(ekf_cf[:, 0], ekf_cf[:, 1], ekf_cf[:, 2], 'r--', linewidth=1.5, label='EKF_CF')
     
     # Plot anchors if available
     for i, name in enumerate(ANCHOR_FRAMES):
         if anchors[name].size > 0:
+            # Use the most recent position (or the median for stability)
             pos = anchors[name][-1, 1:4] if len(anchors[name]) > 0 else None
             if pos is not None:
                 ax.scatter(pos[0], pos[1], pos[2], color=ANCHOR_COLORS[i], marker='*', 
-                           s=120, label=name, edgecolors='k', linewidth=1)
+                           s=100, label=name, edgecolors='k')
     
-    # Mark start and end points
-    ax.scatter(ref[0, 0], ref[0, 1], ref[0, 2], color='green', marker='o', 
-               s=100, label='Start', edgecolors='k', linewidth=1.5, zorder=10)
-    ax.scatter(ref[-1, 0], ref[-1, 1], ref[-1, 2], color='orange', marker='s', 
-               s=100, label='End', edgecolors='k', linewidth=1.5, zorder=10)
-    
-    ax.set_xlim(x_lim)
-    ax.set_ylim(y_lim)
-    ax.set_zlim(z_lim)
     ax.set_xlabel('X [m]', fontsize=PLOT_FONT_SIZE)
     ax.set_ylabel('Y [m]', fontsize=PLOT_FONT_SIZE)
     ax.set_zlabel('Z [m]', fontsize=PLOT_FONT_SIZE)
     
-    # Position legend to avoid trajectory overlap
-    ax.legend(fontsize=PLOT_FONT_SIZE-1, loc='upper left', 
-              bbox_to_anchor=(0.02, 0.98), framealpha=0.9, fancybox=True, shadow=True)
-    ax.set_title('3D Trajectory in Vicon/World Frame', fontsize=PLOT_FONT_SIZE+1, fontweight='bold')
-    ax.grid(True, alpha=0.3)
+    # Set uniform axis limits for all 3D plots
+    ax.set_xlim(TRAJ_3D_X_LIM)
+    ax.set_ylim(TRAJ_3D_Y_LIM)
+    ax.set_zlim(TRAJ_3D_Z_LIM)
+    
+    ax.legend(fontsize=PLOT_FONT_SIZE, loc='upper center', bbox_to_anchor=(0.5, 1.1), ncol=3)
+    ax.set_title('Trajectory in Vicon/World Frame (3D)', fontsize=PLOT_FONT_SIZE)
+    ax.grid(True)
     plt.tight_layout()
-    plt.savefig(output_path_3d, bbox_inches='tight')
-    # Also save as PNG
-    plt.savefig(str(output_path_3d).replace('.pdf', '.png'), dpi=150, bbox_inches='tight')
+    plt.savefig(output_path_3d)
     plt.close()
     
     # 2D XY trajectory plot
-    fig = plt.figure(figsize=(8, 6), dpi=DPI)
+    fig = plt.figure(figsize=(6, 6), dpi=DPI)
     ax = fig.add_subplot(111)
     
-    ax.plot(ref[:, 0], ref[:, 1], color=VICON_COLOR, linewidth=2.5, 
-            label='Vicon', alpha=0.9)
-    ax.plot(ekf_cf[:, 0], ekf_cf[:, 1], color=EKF_CF_COLOR, linewidth=2.0, 
-            linestyle='--', label='EKF_CF', alpha=0.9)
+    ax.plot(ref[:, 0], ref[:, 1], 'b-', linewidth=2, label='Vicon')
+    ax.plot(ekf_cf[:, 0], ekf_cf[:, 1], 'r--', linewidth=1.5, label='EKF_CF')
     
     # Plot anchors if available (XY projection)
     for i, name in enumerate(ANCHOR_FRAMES):
@@ -316,157 +313,151 @@ def plot_3d_trajectory(t, ref, ekf_cf, anchors, output_path_3d, output_path_2d,
             pos = anchors[name][-1, 1:4] if len(anchors[name]) > 0 else None
             if pos is not None:
                 ax.scatter(pos[0], pos[1], color=ANCHOR_COLORS[i], marker='*', 
-                           s=120, label=name, edgecolors='k', linewidth=1)
+                           s=100, label=name, edgecolors='k')
     
     # Mark start and end points
-    ax.scatter(ref[0, 0], ref[0, 1], color='green', marker='o', s=100, 
-               label='Start', edgecolors='k', linewidth=1.5, zorder=10)
-    ax.scatter(ref[-1, 0], ref[-1, 1], color='orange', marker='s', s=100, 
-               label='End', edgecolors='k', linewidth=1.5, zorder=10)
+    if len(ref) > 0:
+        ax.scatter(ref[0, 0], ref[0, 1], color='green', marker='o', s=80, 
+                   label='Start', edgecolors='k', zorder=10)
+        ax.scatter(ref[-1, 0], ref[-1, 1], color='red', marker='s', s=80, 
+                   label='End', edgecolors='k', zorder=10)
     
-    ax.set_xlim(x_lim)
-    ax.set_ylim(y_lim)
     ax.set_xlabel('X [m]', fontsize=PLOT_FONT_SIZE)
     ax.set_ylabel('Y [m]', fontsize=PLOT_FONT_SIZE)
-    
-    # Create title with colored text using matplotlib's text formatting
-    title_text = 'XY Trajectory in Vicon/World Frame'
-    # Simple clear legend without symbols that might overlap
-    legend_text = r'Vicon (solid) — EKF_CF (dashed) — Start (●) — End (■)'
-    
-    ax.set_title(f'{title_text}\n{legend_text}', 
-                 fontsize=PLOT_FONT_SIZE+1, fontweight='bold', pad=20)
-    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=PLOT_FONT_SIZE, loc='upper center', bbox_to_anchor=(0.5, 1.1), ncol=3)
+    ax.set_title('Trajectory in Vicon/World Frame (XY)', fontsize=PLOT_FONT_SIZE)
+    ax.grid(True)
     ax.set_aspect('equal', adjustable='box')
     plt.tight_layout()
-    plt.savefig(output_path_2d, bbox_inches='tight')
-    # Also save as PNG
-    plt.savefig(str(output_path_2d).replace('.pdf', '.png'), dpi=150, bbox_inches='tight')
+    plt.savefig(output_path_2d)
     plt.close()
-    
-    # 2D YZ trajectory plot
-    if output_path_yz:
-        fig = plt.figure(figsize=(8, 6), dpi=DPI)
-        ax = fig.add_subplot(111)
-        
-        ax.plot(ref[:, 1], ref[:, 2], color=VICON_COLOR, linewidth=2.5, 
-                label='Vicon', alpha=0.9)
-        ax.plot(ekf_cf[:, 1], ekf_cf[:, 2], color=EKF_CF_COLOR, linewidth=2.0, 
-                linestyle='--', label='EKF_CF', alpha=0.9)
-        
-        # Plot anchors if available (YZ projection)
-        for i, name in enumerate(ANCHOR_FRAMES):
-            if anchors[name].size > 0:
-                pos = anchors[name][-1, 1:4] if len(anchors[name]) > 0 else None
-                if pos is not None:
-                    ax.scatter(pos[1], pos[2], color=ANCHOR_COLORS[i], marker='*', 
-                               s=120, label=name, edgecolors='k', linewidth=1)
-        
-        # Mark start and end points
-        ax.scatter(ref[0, 1], ref[0, 2], color='green', marker='o', s=100, 
-                   label='Start', edgecolors='k', linewidth=1.5, zorder=10)
-        ax.scatter(ref[-1, 1], ref[-1, 2], color='orange', marker='s', s=100, 
-                   label='End', edgecolors='k', linewidth=1.5, zorder=10)
-        
-        ax.set_xlim(y_lim)
-        ax.set_ylim(z_lim)
-        ax.set_xlabel('Y [m]', fontsize=PLOT_FONT_SIZE)
-        ax.set_ylabel('Z [m]', fontsize=PLOT_FONT_SIZE)
-        # Create title with colored text using matplotlib's text formatting
-        title_text = 'YZ Trajectory in Vicon/World Frame'
-        # Simple clear legend without symbols that might overlap
-        legend_text = r'Vicon (solid) — EKF_CF (dashed) — Start (●) — End (■)'
-        
-        ax.set_title(f'{title_text}\n{legend_text}', 
-                     fontsize=PLOT_FONT_SIZE+1, fontweight='bold', pad=20)
-        ax.grid(True, alpha=0.3)
-        ax.set_aspect('equal', adjustable='box')
-        plt.tight_layout()
-        plt.savefig(output_path_yz, bbox_inches='tight')
-        # Also save as PNG
-        plt.savefig(str(output_path_yz).replace('.pdf', '.png'), dpi=150, bbox_inches='tight')
-        plt.close()
-    
-    # 2D XZ trajectory plot
-    if output_path_xz:
-        fig = plt.figure(figsize=(8, 6), dpi=DPI)
-        ax = fig.add_subplot(111)
-        
-        ax.plot(ref[:, 0], ref[:, 2], color=VICON_COLOR, linewidth=2.5, 
-                label='Vicon', alpha=0.9)
-        ax.plot(ekf_cf[:, 0], ekf_cf[:, 2], color=EKF_CF_COLOR, linewidth=2.0, 
-                linestyle='--', label='EKF_CF', alpha=0.9)
-        
-        # Plot anchors if available (XZ projection)
-        for i, name in enumerate(ANCHOR_FRAMES):
-            if anchors[name].size > 0:
-                pos = anchors[name][-1, 1:4] if len(anchors[name]) > 0 else None
-                if pos is not None:
-                    ax.scatter(pos[0], pos[2], color=ANCHOR_COLORS[i], marker='*', 
-                               s=120, label=name, edgecolors='k', linewidth=1)
-        
-        # Mark start and end points
-        ax.scatter(ref[0, 0], ref[0, 2], color='green', marker='o', s=100, 
-                   label='Start', edgecolors='k', linewidth=1.5, zorder=10)
-        ax.scatter(ref[-1, 0], ref[-1, 2], color='orange', marker='s', s=100, 
-                   label='End', edgecolors='k', linewidth=1.5, zorder=10)
-        
-        ax.set_xlim(x_lim)
-        ax.set_ylim(z_lim)
-        ax.set_xlabel('X [m]', fontsize=PLOT_FONT_SIZE)
-        ax.set_ylabel('Z [m]', fontsize=PLOT_FONT_SIZE)
-        
-        # Create title with colored text using matplotlib's text formatting
-        title_text = 'XZ Trajectory in Vicon/World Frame'
-        # Simple clear legend without symbols that might overlap
-        legend_text = r'Vicon (solid) — EKF_CF (dashed) — Start (●) — End (■)'
-        
-        ax.set_title(f'{title_text}\n{legend_text}', 
-                     fontsize=PLOT_FONT_SIZE+1, fontweight='bold', pad=20)
-        ax.grid(True, alpha=0.3)
-        ax.set_aspect('equal', adjustable='box')
-        plt.tight_layout()
-        plt.savefig(output_path_xz, bbox_inches='tight')
-        # Also save as PNG
-        plt.savefig(str(output_path_xz).replace('.pdf', '.png'), dpi=150, bbox_inches='tight')
-        plt.close()
 
 # ------------------------------------------------------------------------- #
 def plot_errors(t, err_ekf_cf, output_path):
     """Create plots of pointwise errors along the trajectory."""
-    fig, axes = plt.subplots(4, 1, figsize=(10, 8), dpi=DPI, sharex=True)
+    fig, axes = plt.subplots(4, 1, figsize=(6.3, 8), dpi=DPI, sharex=True)
     axes = axes.flatten()
     
     labels = ['X', 'Y', 'Z']
     
-    # Plot errors per axis
+    # Plot errors per axis with uniform Y limits
     for i in range(3):
-        axes[i].plot(t, err_ekf_cf[:, i], color=EKF_CF_COLOR, linewidth=1.5, 
-                     alpha=0.8, label='EKF_CF Error')
+        axes[i].plot(t, err_ekf_cf[:, i], 'r-', linewidth=1, alpha=0.8, label='EKF_CF Error')
         axes[i].set_ylabel(f'{labels[i]} Error [m]', fontsize=PLOT_FONT_SIZE)
-        axes[i].grid(True, linestyle=':', alpha=0.7)
-        axes[i].set_ylim([-ERROR_YLIM_MAX, ERROR_YLIM_MAX])
+        axes[i].set_ylim(ERROR_PLOT_Y_LIM)  # Set uniform Y-axis limits (-0.7, 0.7)
+        axes[i].grid(True, linestyle=':')
         if i == 0:
             axes[i].legend(fontsize=PLOT_FONT_SIZE, loc='upper right')
-        axes[i].tick_params(axis='both', which='major', labelsize=PLOT_FONT_SIZE-1)
     
-    # Plot total error
+    # Plot total error with uniform Y limit
     total_err_ekf_cf = np.sqrt(np.sum(err_ekf_cf**2, axis=1))
-    axes[3].plot(t, total_err_ekf_cf, color=EKF_CF_COLOR, linewidth=2.0, 
-                 label='EKF_CF Total Error')
+    axes[3].plot(t, total_err_ekf_cf, 'r-', linewidth=1.5, label='EKF_CF Total Error')
     axes[3].set_ylabel('Total Error [m]', fontsize=PLOT_FONT_SIZE)
     axes[3].set_xlabel('Time [s]', fontsize=PLOT_FONT_SIZE)
-    axes[3].grid(True, linestyle=':', alpha=0.7)
-    axes[3].set_ylim([0, ERROR_YLIM_MAX])
+    axes[3].set_ylim(ERROR_TOTAL_Y_LIM)  # Set uniform Y-axis limit for total error
+    axes[3].grid(True, linestyle=':')
     axes[3].legend(fontsize=PLOT_FONT_SIZE, loc='upper right')
-    axes[3].tick_params(axis='both', which='major', labelsize=PLOT_FONT_SIZE-1)
     
-    plt.suptitle('Position Errors vs Reference', fontsize=PLOT_FONT_SIZE+1, fontweight='bold')
     plt.tight_layout()
-    plt.savefig(output_path, bbox_inches='tight')
-    # Also save as PNG
-    plt.savefig(str(output_path).replace('.pdf', '.png'), dpi=150, bbox_inches='tight')
+    plt.savefig(output_path)
     plt.close()
+
+# ------------------------------------------------------------------------- #
+def plot_voltage_data(voltage_data, output_path):
+    """Create voltage plot over time for all 4 anchors."""
+    if voltage_data.size == 0:
+        print("Warning: No voltage data available for plotting")
+        return
+        
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6), dpi=DPI)
+    
+    times = voltage_data[:, 0]
+    
+    # Normalize time to start from 0
+    times = times - times[0] if len(times) > 0 else times
+    
+    # Colors for the 4 anchors matching ANCHOR_COLORS
+    colors = ['black', 'gold', 'gray', 'red']  # Nero, Giallo, Grigio, Rosso
+    anchor_names = ['Nero', 'Giallo', 'Grigio', 'Rosso']
+    
+    # Plot each anchor's voltage
+    for i in range(4):
+        if voltage_data.shape[1] > i + 1:  # Check if we have voltage data for this anchor
+            voltages = voltage_data[:, i + 1]  # i+1 because column 0 is time
+            ax.plot(times, voltages, color=colors[i], linewidth=2, 
+                   label=f'Anchor {anchor_names[i]}', alpha=0.8, marker='o', markersize=2)
+    
+    ax.set_xlabel('Time [s]', fontsize=PLOT_FONT_SIZE)
+    ax.set_ylabel('Voltage [V]', fontsize=PLOT_FONT_SIZE)
+    ax.set_title('Anchor Voltages Over Time', fontsize=PLOT_FONT_SIZE)
+    ax.grid(True, linestyle=':', alpha=0.7)
+    ax.legend(fontsize=PLOT_FONT_SIZE-1, loc='best')
+    
+    # Add statistics as text for each anchor
+    if voltage_data.shape[1] > 1:
+        stats_text = "Voltage Statistics:\n"
+        for i in range(4):
+            if voltage_data.shape[1] > i + 1:
+                voltages = voltage_data[:, i + 1]
+                if len(voltages) > 0:
+                    mean_v = np.mean(voltages)
+                    std_v = np.std(voltages)
+                    min_v = np.min(voltages)
+                    max_v = np.max(voltages)
+                    stats_text += f"{anchor_names[i]}: {mean_v:.3f}V (±{std_v:.3f})\n"
+        
+        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=8, 
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+    
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
+
+# ------------------------------------------------------------------------- #
+def extract_voltage_data(bag_dir: pathlib.Path):
+    """Extract voltage data from the VOLTAGE_TOPIC with 4 anchor values."""
+    voltage_data = []
+    
+    for topic, stamp_sec, msg in rosbag_iter_topics(bag_dir, [VOLTAGE_TOPIC]):
+        if topic == VOLTAGE_TOPIC:
+            try:
+                voltages = None
+                
+                # Try to extract the 4 voltage values for the anchors
+                if hasattr(msg, 'data') and hasattr(msg.data, '__len__') and len(msg.data) == 4:
+                    # If it's an array with 4 values
+                    voltages = list(msg.data)
+                elif hasattr(msg, 'voltages') and hasattr(msg.voltages, '__len__') and len(msg.voltages) == 4:
+                    # If it's explicitly named 'voltages'
+                    voltages = list(msg.voltages)
+                elif hasattr(msg, 'voltage') and hasattr(msg.voltage, '__len__') and len(msg.voltage) == 4:
+                    # If it's named 'voltage' but is an array
+                    voltages = list(msg.voltage)
+                else:
+                    # Try to find any array field with 4 elements
+                    for field_name in dir(msg):
+                        if not field_name.startswith('_'):
+                            field_value = getattr(msg, field_name)
+                            if hasattr(field_value, '__len__') and len(field_value) == 4:
+                                try:
+                                    # Check if all elements are numeric
+                                    voltages = [float(v) for v in field_value]
+                                    break
+                                except (ValueError, TypeError):
+                                    continue
+                
+                if voltages is not None and len(voltages) == 4:
+                    # Store timestamp and 4 voltage values: [time, v1, v2, v3, v4]
+                    voltage_data.append([stamp_sec] + voltages)
+                
+            except Exception as e:
+                print(f"Warning: Could not extract voltage data from message: {e}")
+                continue
+    
+    if voltage_data:
+        return np.array(voltage_data)  # Shape: (n_samples, 5) = [time, v1, v2, v3, v4]
+    else:
+        return np.empty((0, 5))  # 5 columns: time + 4 voltages
 
 # ------------------------------------------------------------------------- #
 def analyse_bag(bag_dir, out_dir):
@@ -476,70 +467,73 @@ def analyse_bag(bag_dir, out_dir):
     bag_out_dir = out_dir / bag_dir.name
     bag_out_dir.mkdir(parents=True, exist_ok=True)
     
-    streams, anchors = extract_streams(bag_dir)
+    streams, anchors, voltage_data = extract_streams(bag_dir)
     
     # Apply static transform to align frames correctly
-    streams, anchors = apply_static_transform(streams, anchors)
+    streams, anchors, voltage_data = apply_static_transform(streams, anchors, voltage_data)
     
     t, ref, ekf_cf = align_streams(streams)
     
     # Error calculations
     rmse_ekf_cf_axis, rmse_ekf_cf_tot, err_ekf_cf = compute_rmse(ref, ekf_cf)
+    
+    # Standard deviation calculations
+    stddev_ekf_cf_axis, stddev_ekf_cf_tot = compute_stddev(err_ekf_cf)
 
-    # Save CSV summary
+    # Save CSV summary with added stddev metrics
     csv_path = bag_out_dir / f"{bag_dir.name}_metrics.csv"
     pd.DataFrame({
-        'metric' : ['RMSE_X', 'RMSE_Y', 'RMSE_Z', 'RMSE_TOT'],
-        'ekf_cf': np.concatenate([rmse_ekf_cf_axis, [rmse_ekf_cf_tot]])
+        'metric' : ['RMSE_X', 'RMSE_Y', 'RMSE_Z', 'RMSE_TOT', 
+                   'StdDev_X', 'StdDev_Y', 'StdDev_Z', 'StdDev_TOT'],
+        'ekf_cf': np.concatenate([rmse_ekf_cf_axis, [rmse_ekf_cf_tot], 
+                                 stddev_ekf_cf_axis, [stddev_ekf_cf_tot]])
     }).to_csv(csv_path, index=False)
 
     # Create traditional plots (as before)
     plot_path = bag_out_dir / f"{bag_dir.name}_traj.pdf"
-    plt.figure(figsize=(10, 8), dpi=DPI)
+    plt.figure(figsize=(6.3, 2.8*3), dpi=DPI)
     axx = [plt.subplot(3,1,i+1) for i in range(3)]
     labels = ['x','y','z']
     for i, ax in enumerate(axx):
-        ax.plot(t, ref[:,i], color=VICON_COLOR, linewidth=2.0, label='Vicon', alpha=0.9)
-        ax.plot(t, ekf_cf[:,i], color=EKF_CF_COLOR, linewidth=1.8, linestyle='--', 
-                label='EKF_CF', alpha=0.9)
+        ax.plot(t, ref[:,i], label='Vicon', linewidth=1.0)
+        ax.plot(t, ekf_cf[:,i], label='EKF_CF', linewidth=0.8, linestyle='--')
         ax.set_ylabel(labels[i]+' [m]', fontsize=PLOT_FONT_SIZE)
-        ax.grid(True, which='both', linestyle=':', alpha=0.7)
-        ax.tick_params(axis='both', which='major', labelsize=PLOT_FONT_SIZE-1)
+        ax.grid(True, which='both', linestyle=':')
         if i==0:
             ax.legend(fontsize=PLOT_FONT_SIZE, ncol=2, loc='upper center')
     axx[-1].set_xlabel('Time [s]', fontsize=PLOT_FONT_SIZE)
-    plt.suptitle('Position Trajectories vs Time', fontsize=PLOT_FONT_SIZE+1, fontweight='bold')
     plt.tight_layout()
-    plt.savefig(plot_path, bbox_inches='tight')
-    # Also save as PNG
-    plt.savefig(str(plot_path).replace('.pdf', '.png'), dpi=150, bbox_inches='tight')
+    plt.savefig(plot_path)
     plt.close()
     
     # Create 3D and 2D trajectory plots
     traj3d_path = bag_out_dir / f"{bag_dir.name}_traj3d.pdf"
     traj2d_path = bag_out_dir / f"{bag_dir.name}_traj2d.pdf"
-    trajyz_path = bag_out_dir / f"{bag_dir.name}_trajyz.pdf"
-    trajxz_path = bag_out_dir / f"{bag_dir.name}_trajxz.pdf"
-    plot_3d_trajectory(t, ref, ekf_cf, anchors, traj3d_path, traj2d_path, trajyz_path, trajxz_path)
+    plot_3d_trajectory(t, ref, ekf_cf, anchors, traj3d_path, traj2d_path)
     
     # Create error plots
     error_path = bag_out_dir / f"{bag_dir.name}_errors.pdf"
     plot_errors(t, err_ekf_cf, error_path)
     
-    return csv_path, plot_path, rmse_ekf_cf_tot, bag_out_dir
+    # Create voltage plot
+    voltage_path = bag_out_dir / f"{bag_dir.name}_voltage.pdf"
+    plot_voltage_data(voltage_data, voltage_path)
+    
+    return csv_path, plot_path, rmse_ekf_cf_tot, stddev_ekf_cf_tot, bag_out_dir
 
 def worker(bag_dir, out_root):
     try:
-        csv, plot, r_ekf_cf, bag_out_dir = analyse_bag(bag_dir, out_root)
-        return (bag_dir.name, r_ekf_cf, str(csv), str(plot), str(bag_out_dir))
+        csv, plot, r_ekf_cf, std_ekf_cf, bag_out_dir = analyse_bag(bag_dir, out_root)
+        return (bag_dir.name, r_ekf_cf, std_ekf_cf, str(csv), str(plot), str(bag_out_dir))
     except Exception as e:
-        return (bag_dir.name, 'ERROR', str(e), '', '')
+        return (bag_dir.name, 'ERROR', 'ERROR', str(e), '', '')
 
 # ------------------------------------------------------------------------- #
 def create_category_summary_figure(table, results_df, out_dir):
-    """Create comprehensive summary figure with 3D trajectories and 2D views per category."""
+    """Create comprehensive summary figure with 3D trajectories and error plots per category."""
     # Convert string errors to NaN
-    results_df['RMSE_ekf_cf'] = pd.to_numeric(results_df['RMSE_ekf_cf'], errors='coerce')
+    for col in ['RMSE_ekf_cf', 'StdDev_ekf_cf']:
+        results_df[col] = pd.to_numeric(results_df[col], errors='coerce')
     
     # Merge with metadata table
     metadata_dict = {}
@@ -553,93 +547,48 @@ def create_category_summary_figure(table, results_df, out_dir):
     metadata_df.reset_index(inplace=True)
     
     combined_df = results_df.merge(metadata_df, on='bag', how='left')
-    # Remove error entries and ensure we have valid categories with numeric data
-    combined_df = combined_df.dropna(subset=['RMSE_ekf_cf', 'category'])
+    combined_df = combined_df.dropna(subset=['RMSE_ekf_cf'])  # Remove error entries
     
     categories = combined_df['category'].unique()
     categories = [cat for cat in categories if pd.notna(cat)]
-    
-    # Filter out categories that don't have any valid numeric data
-    valid_categories = []
-    for cat in categories:
-        cat_data = combined_df[combined_df['category'] == cat]
-        if len(cat_data) > 0 and not cat_data['RMSE_ekf_cf'].isna().all():
-            valid_categories.append(cat)
-    
-    categories = valid_categories
     
     if len(categories) == 0:
         print("No valid categories found for summary figure")
         return None
     
-    # Calculate global axis limits for all 3D plots
-    global_x_min, global_x_max = float('inf'), float('-inf')
-    global_y_min, global_y_max = float('inf'), float('-inf')
-    global_z_min, global_z_max = float('inf'), float('-inf')
+    # Create figure with subplots: 6 columns (3D traj, XY traj, XZ traj, error total, error xyz, voltage) x n_categories rows
+    fig = plt.figure(figsize=(36, 6*len(categories)), dpi=DPI)
     
-    # First pass: collect all trajectory data to determine global limits
-    trajectory_data = {}
     for cat_idx, category in enumerate(categories):
         cat_data = combined_df[combined_df['category'] == category]
+        
         if len(cat_data) == 0:
             continue
+            
+        # Find best performer for this category (lowest RMSE total)
         best_idx = cat_data['RMSE_ekf_cf'].idxmin()
         best_bag = cat_data.loc[best_idx]
         best_bag_name = best_bag['bag']
         best_bag_dir = out_dir / best_bag_name
         
+        # Get RMSE value for the title
+        best_rmse_cm = best_bag['RMSE_ekf_cf'] * 100  # Convert to cm
+        
+        # Load data for best bag to create plots
         try:
-            streams, anchors = extract_streams(best_bag_dir.parent.parent / best_bag_name)
-            streams, anchors = apply_static_transform(streams, anchors)
+            # Re-analyze the best bag to get trajectory data and voltage data
+            streams, anchors, voltage_data = extract_streams(best_bag_dir.parent.parent / best_bag_name)
+            streams, anchors, voltage_data = apply_static_transform(streams, anchors, voltage_data)
             t, ref, ekf_cf = align_streams(streams)
-            trajectory_data[category] = (t, ref, ekf_cf, anchors)
-            
-            # Update global limits
-            all_points = np.vstack([ref, ekf_cf])
-            global_x_min = min(global_x_min, all_points[:, 0].min())
-            global_x_max = max(global_x_max, all_points[:, 0].max())
-            global_y_min = min(global_y_min, all_points[:, 1].min())
-            global_y_max = max(global_y_max, all_points[:, 1].max())
-            global_z_min = min(global_z_min, all_points[:, 2].min())
-            global_z_max = max(global_z_max, all_points[:, 2].max())
+            _, _, err_ekf_cf = compute_rmse(ref, ekf_cf)
         except Exception as e:
             print(f"Error loading data for {best_bag_name}: {e}")
             continue
-    
-    # Add margin to global limits
-    x_range = global_x_max - global_x_min
-    y_range = global_y_max - global_y_min
-    z_range = global_z_max - global_z_min
-    margin = 0.1
-    
-    global_x_lim = [global_x_min - margin * x_range, global_x_max + margin * x_range]
-    global_y_lim = [global_y_min - margin * y_range, global_y_max + margin * y_range]
-    global_z_lim = [global_z_min - margin * z_range, global_z_max + margin * z_range]
-    
-    # Create figure with subplots: 8 columns (3D traj, XY, YZ, XZ, Error X, Error Y, Error Z, Error Total) x n_categories rows
-    fig = plt.figure(figsize=(32, 5*len(categories)), dpi=DPI)
-    
-    for cat_idx, category in enumerate(categories):
-        cat_data = combined_df[combined_df['category'] == category]
         
-        if len(cat_data) == 0 or category not in trajectory_data:
-            continue
-            
-        # Get pre-computed trajectory data
-        t, ref, ekf_cf, anchors = trajectory_data[category]
-        _, rmse_total, err_ekf_cf = compute_rmse(ref, ekf_cf)
-        
-        # Find the best bag info for this category
-        best_rmse_idx = cat_data['RMSE_ekf_cf'].idxmin()
-        best_bag_label = cat_data.loc[best_rmse_idx, 'label']
-        best_bag_name = cat_data.loc[best_rmse_idx, 'bag']
-        
-        # 3D Trajectory plot
-        ax1 = fig.add_subplot(len(categories), 8, cat_idx*8 + 1, projection='3d')
-        ax1.plot(ref[:, 0], ref[:, 1], ref[:, 2], color=VICON_COLOR, linewidth=2.5, 
-                 label='Vicon', alpha=0.9)
-        ax1.plot(ekf_cf[:, 0], ekf_cf[:, 1], ekf_cf[:, 2], color=EKF_CF_COLOR, 
-                 linewidth=2.0, linestyle='--', label='EKF_CF', alpha=0.9)
+        # 3D Trajectory plot with RMSE in title
+        ax1 = fig.add_subplot(len(categories), 6, cat_idx*6 + 1, projection='3d')
+        ax1.plot(ref[:, 0], ref[:, 1], ref[:, 2], 'b-', linewidth=2, label='Vicon', alpha=0.8)
+        ax1.plot(ekf_cf[:, 0], ekf_cf[:, 1], ekf_cf[:, 2], 'r--', linewidth=1.5, label='EKF_CF', alpha=0.8)
         
         # Plot anchors if available
         for i, name in enumerate(ANCHOR_FRAMES):
@@ -648,111 +597,117 @@ def create_category_summary_figure(table, results_df, out_dir):
                 ax1.scatter(pos[0], pos[1], pos[2], color=ANCHOR_COLORS[i], marker='*', 
                            s=60, label=name, edgecolors='k', alpha=0.8)
         
-        # Apply global axis limits
-        ax1.set_xlim(global_x_lim)
-        ax1.set_ylim(global_y_lim)
-        ax1.set_zlim(global_z_lim)
+        ax1.set_xlabel('X [m]', fontsize=PLOT_FONT_SIZE-1)
+        ax1.set_ylabel('Y [m]', fontsize=PLOT_FONT_SIZE-1)
+        ax1.set_zlabel('Z [m]', fontsize=PLOT_FONT_SIZE-1)
         
-        ax1.set_xlabel('X [m]', fontsize=PLOT_FONT_SIZE-2)
-        ax1.set_ylabel('Y [m]', fontsize=PLOT_FONT_SIZE-2)
-        ax1.set_zlabel('Z [m]', fontsize=PLOT_FONT_SIZE-2)
-        ax1.set_title(f'{category} - 3D Trajectory\nRMSE: {rmse_total:.4f}m ({best_bag_name})', 
-                      fontsize=PLOT_FONT_SIZE-2)
+        # Set uniform axis limits for all 3D plots
+        ax1.set_xlim(TRAJ_3D_X_LIM)
+        ax1.set_ylim(TRAJ_3D_Y_LIM)
+        ax1.set_zlim(TRAJ_3D_Z_LIM)
         
-        # Position legend to avoid trajectory overlap
+        ax1.set_title(f'{category} - 3D\nRMSE: {best_rmse_cm:.2f} cm\n({best_bag["label"]})', fontsize=PLOT_FONT_SIZE)
         if cat_idx == 0:
-            ax1.legend(fontsize=PLOT_FONT_SIZE-3, loc='upper left', 
-                      bbox_to_anchor=(0.02, 0.98), framealpha=0.9)
+            ax1.legend(fontsize=PLOT_FONT_SIZE-2, loc='upper center', bbox_to_anchor=(0.5, 1.3), ncol=2)
         ax1.grid(True, alpha=0.3)
         
-        # XY trajectory plot
-        ax2 = fig.add_subplot(len(categories), 8, cat_idx*8 + 2)
-        ax2.plot(ref[:, 0], ref[:, 1], color=VICON_COLOR, linewidth=2.5, 
-                 label='Vicon', alpha=0.9)
-        ax2.plot(ekf_cf[:, 0], ekf_cf[:, 1], color=EKF_CF_COLOR, linewidth=2.0, 
-                 linestyle='--', label='EKF_CF', alpha=0.9)
-        ax2.scatter(ref[0, 0], ref[0, 1], color='green', marker='o', s=60, zorder=10)
-        ax2.scatter(ref[-1, 0], ref[-1, 1], color='orange', marker='s', s=60, zorder=10)
-        ax2.set_xlim(global_x_lim)
-        ax2.set_ylim(global_y_lim)
-        ax2.set_xlabel('X [m]', fontsize=PLOT_FONT_SIZE-2)
-        ax2.set_ylabel('Y [m]', fontsize=PLOT_FONT_SIZE-2)
-        ax2.set_title(f'XY View', fontsize=PLOT_FONT_SIZE-2)
-        ax2.grid(True, alpha=0.3)
+        # XY Trajectory plot
+        ax2 = fig.add_subplot(len(categories), 6, cat_idx*6 + 2)
+        ax2.plot(ref[:, 0], ref[:, 1], 'b-', linewidth=2, label='Vicon', alpha=0.8)
+        ax2.plot(ekf_cf[:, 0], ekf_cf[:, 1], 'r--', linewidth=1.5, label='EKF_CF', alpha=0.8)
+        
+        # Plot anchors if available (XY projection)
+        for i, name in enumerate(ANCHOR_FRAMES):
+            if anchors[name].size > 0:
+                pos = anchors[name][-1, 1:4]
+                ax2.scatter(pos[0], pos[1], color=ANCHOR_COLORS[i], marker='*', 
+                           s=60, label=name, edgecolors='k', alpha=0.8)
+        
+        ax2.set_xlabel('X [m]', fontsize=PLOT_FONT_SIZE-1)
+        ax2.set_ylabel('Y [m]', fontsize=PLOT_FONT_SIZE-1)
+        ax2.set_title(f'{category} - XY\n({best_bag["label"]})', fontsize=PLOT_FONT_SIZE)
+        ax2.grid(True, alpha=0.7)
         ax2.set_aspect('equal', adjustable='box')
         
-        # YZ trajectory plot
-        ax3 = fig.add_subplot(len(categories), 8, cat_idx*8 + 3)
-        ax3.plot(ref[:, 1], ref[:, 2], color=VICON_COLOR, linewidth=2.5, 
-                 label='Vicon', alpha=0.9)
-        ax3.plot(ekf_cf[:, 1], ekf_cf[:, 2], color=EKF_CF_COLOR, linewidth=2.0, 
-                 linestyle='--', label='EKF_CF', alpha=0.9)
-        ax3.scatter(ref[0, 1], ref[0, 2], color='green', marker='o', s=60, zorder=10)
-        ax3.scatter(ref[-1, 1], ref[-1, 2], color='orange', marker='s', s=60, zorder=10)
-        ax3.set_xlim(global_y_lim)
-        ax3.set_ylim(global_z_lim)
-        ax3.set_xlabel('Y [m]', fontsize=PLOT_FONT_SIZE-2)
-        ax3.set_ylabel('Z [m]', fontsize=PLOT_FONT_SIZE-2)
-        ax3.set_title(f'YZ View', fontsize=PLOT_FONT_SIZE-2)
-        ax3.grid(True, alpha=0.3)
-        ax3.set_aspect('equal', adjustable='box')
+        # XZ Trajectory plot
+        ax3 = fig.add_subplot(len(categories), 6, cat_idx*6 + 3)
+        ax3.plot(ref[:, 0], ref[:, 2], 'b-', linewidth=2, label='Vicon', alpha=0.8)
+        ax3.plot(ekf_cf[:, 0], ekf_cf[:, 2], 'r--', linewidth=1.5, label='EKF_CF', alpha=0.8)
         
-        # XZ trajectory plot
-        ax4 = fig.add_subplot(len(categories), 8, cat_idx*8 + 4)
-        ax4.plot(ref[:, 0], ref[:, 2], color=VICON_COLOR, linewidth=2.5, 
-                 label='Vicon', alpha=0.9)
-        ax4.plot(ekf_cf[:, 0], ekf_cf[:, 2], color=EKF_CF_COLOR, linewidth=2.0, 
-                 linestyle='--', label='EKF_CF', alpha=0.9)
-        ax4.scatter(ref[0, 0], ref[0, 2], color='green', marker='o', s=60, zorder=10)
-        ax4.scatter(ref[-1, 0], ref[-1, 2], color='orange', marker='s', s=60, zorder=10)
-        ax4.set_xlim(global_x_lim)
-        ax4.set_ylim(global_z_lim)
-        ax4.set_xlabel('X [m]', fontsize=PLOT_FONT_SIZE-2)
-        ax4.set_ylabel('Z [m]', fontsize=PLOT_FONT_SIZE-2)
-        ax4.set_title(f'XZ View', fontsize=PLOT_FONT_SIZE-2)
-        ax4.grid(True, alpha=0.3)
-        ax4.set_aspect('equal', adjustable='box')
+        # Plot anchors if available (XZ projection)
+        for i, name in enumerate(ANCHOR_FRAMES):
+            if anchors[name].size > 0:
+                pos = anchors[name][-1, 1:4]
+                ax3.scatter(pos[0], pos[2], color=ANCHOR_COLORS[i], marker='*', 
+                           s=60, label=name, edgecolors='k', alpha=0.8)
         
-        # Error plots
-        labels = ['X', 'Y', 'Z']
-        
-        # X Error plot
-        ax5 = fig.add_subplot(len(categories), 8, cat_idx*8 + 5)
-        ax5.plot(t, err_ekf_cf[:, 0], color=EKF_CF_COLOR, linewidth=1.5, alpha=0.8)
-        ax5.set_ylabel('X Error [m]', fontsize=PLOT_FONT_SIZE-2)
-        ax5.set_title('X Error', fontsize=PLOT_FONT_SIZE-2)
-        ax5.grid(True, linestyle=':', alpha=0.7)
-        ax5.set_ylim([-ERROR_YLIM_MAX, ERROR_YLIM_MAX])
-        ax5.tick_params(axis='both', which='major', labelsize=PLOT_FONT_SIZE-3)
-        
-        # Y Error plot
-        ax6 = fig.add_subplot(len(categories), 8, cat_idx*8 + 6)
-        ax6.plot(t, err_ekf_cf[:, 1], color=EKF_CF_COLOR, linewidth=1.5, alpha=0.8)
-        ax6.set_ylabel('Y Error [m]', fontsize=PLOT_FONT_SIZE-2)
-        ax6.set_title('Y Error', fontsize=PLOT_FONT_SIZE-2)
-        ax6.grid(True, linestyle=':', alpha=0.7)
-        ax6.set_ylim([-ERROR_YLIM_MAX, ERROR_YLIM_MAX])
-        ax6.tick_params(axis='both', which='major', labelsize=PLOT_FONT_SIZE-3)
-        
-        # Z Error plot
-        ax7 = fig.add_subplot(len(categories), 8, cat_idx*8 + 7)
-        ax7.plot(t, err_ekf_cf[:, 2], color=EKF_CF_COLOR, linewidth=1.5, alpha=0.8)
-        ax7.set_ylabel('Z Error [m]', fontsize=PLOT_FONT_SIZE-2)
-        ax7.set_title('Z Error', fontsize=PLOT_FONT_SIZE-2)
-        ax7.grid(True, linestyle=':', alpha=0.7)
-        ax7.set_ylim([-ERROR_YLIM_MAX, ERROR_YLIM_MAX])
-        ax7.tick_params(axis='both', which='major', labelsize=PLOT_FONT_SIZE-3)
+        ax3.set_xlabel('X [m]', fontsize=PLOT_FONT_SIZE-1)
+        ax3.set_ylabel('Z [m]', fontsize=PLOT_FONT_SIZE-1)
+        ax3.set_title(f'{category} - XZ\n({best_bag["label"]})', fontsize=PLOT_FONT_SIZE)
+        ax3.grid(True, alpha=0.7)
         
         # Total Error plot
-        ax8 = fig.add_subplot(len(categories), 8, cat_idx*8 + 8)
+        ax4 = fig.add_subplot(len(categories), 6, cat_idx*6 + 4)
         total_err_ekf_cf = np.sqrt(np.sum(err_ekf_cf**2, axis=1))
-        ax8.plot(t, total_err_ekf_cf, color=EKF_CF_COLOR, linewidth=2.0)
-        ax8.set_ylabel('Total Error [m]', fontsize=PLOT_FONT_SIZE-2)
-        ax8.set_xlabel('Time [s]', fontsize=PLOT_FONT_SIZE-2)
-        ax8.set_title('Total Error', fontsize=PLOT_FONT_SIZE-2)
-        ax8.grid(True, linestyle=':', alpha=0.7)
-        ax8.set_ylim([0, ERROR_YLIM_MAX])
-        ax8.tick_params(axis='both', which='major', labelsize=PLOT_FONT_SIZE-3)
+        ax4.plot(t, total_err_ekf_cf, 'r-', linewidth=1.5, label='EKF_CF Total Error', alpha=0.8)
+        ax4.set_ylabel('Errore totale [m]', fontsize=PLOT_FONT_SIZE-1)
+        ax4.set_xlabel('Tempo [s]', fontsize=PLOT_FONT_SIZE-1)
+        ax4.set_ylim(ERROR_TOTAL_Y_LIM)  # Set uniform Y-axis limit for total error
+        ax4.set_title(f'{category} - Errore Totale\n({best_bag["label"]})', fontsize=PLOT_FONT_SIZE)
+        ax4.grid(True, linestyle=':', alpha=0.7)
+        if cat_idx == 0:
+            ax4.legend(fontsize=PLOT_FONT_SIZE-2)
+        
+        # XYZ Error components plot
+        ax5 = fig.add_subplot(len(categories), 6, cat_idx*6 + 5)
+        labels = ['X', 'Y', 'Z']
+        colors = ['red', 'green', 'blue']
+        for i in range(3):
+            ax5.plot(t, err_ekf_cf[:, i], color=colors[i], linewidth=1.2, 
+                    label=f'Errore {labels[i]}', alpha=0.8)
+        ax5.set_ylabel('Errore [m]', fontsize=PLOT_FONT_SIZE-1)
+        ax5.set_xlabel('Tempo [s]', fontsize=PLOT_FONT_SIZE-1)
+        ax5.set_ylim(ERROR_PLOT_Y_LIM)  # Set uniform Y-axis limits (-0.7, 0.7)
+        ax5.set_title(f'{category} - Errori XYZ\n({best_bag["label"]})', fontsize=PLOT_FONT_SIZE)
+        ax5.grid(True, linestyle=':', alpha=0.7)
+        if cat_idx == 0:
+            ax5.legend(fontsize=PLOT_FONT_SIZE-2)
+        
+        # Voltage plot
+        ax6 = fig.add_subplot(len(categories), 6, cat_idx*6 + 6)
+        if voltage_data.size > 0:
+            v_times = voltage_data[:, 0]
+            # Normalize time to start from 0
+            v_times = v_times - v_times[0] if len(v_times) > 0 else v_times
+            
+            # Colors for the 4 anchors
+            colors_v = ['black', 'gold', 'gray', 'red']
+            anchor_names = ['Nero', 'Giallo', 'Grigio', 'Rosso']
+            
+            # Plot each anchor's voltage
+            for i in range(4):
+                if voltage_data.shape[1] > i + 1:
+                    v_voltages = voltage_data[:, i + 1]
+                    ax6.plot(v_times, v_voltages, color=colors_v[i], linewidth=1.2, 
+                            label=anchor_names[i], alpha=0.8)
+            
+            # Show mean voltage for all anchors
+            if voltage_data.shape[1] > 1:
+                all_voltages = voltage_data[:, 1:].flatten()
+                mean_v = np.mean(all_voltages)
+                ax6.text(0.02, 0.98, f'Media: {mean_v:.3f}V', transform=ax6.transAxes, 
+                        fontsize=7, verticalalignment='top', 
+                        bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        else:
+            ax6.text(0.5, 0.5, 'Dati tensione\nnon disponibili', transform=ax6.transAxes, 
+                    fontsize=10, ha='center', va='center')
+        
+        ax6.set_ylabel('Tensione [V]', fontsize=PLOT_FONT_SIZE-1)
+        ax6.set_xlabel('Tempo [s]', fontsize=PLOT_FONT_SIZE-1)
+        ax6.set_title(f'{category} - Tensioni\n({best_bag["label"]})', fontsize=PLOT_FONT_SIZE)
+        ax6.grid(True, linestyle=':', alpha=0.7)
+        if cat_idx == 0 and voltage_data.size > 0:
+            ax6.legend(fontsize=PLOT_FONT_SIZE-2, loc='lower right')
     
     plt.tight_layout()
     summary_path = out_dir / "category_summary_comprehensive.pdf"
@@ -770,7 +725,8 @@ def create_category_summary_figure(table, results_df, out_dir):
 def create_summary_figure(table, results_df, out_dir):
     """Create summary figure with best scores per category."""
     # Convert string errors to NaN
-    results_df['RMSE_ekf_cf'] = pd.to_numeric(results_df['RMSE_ekf_cf'], errors='coerce')
+    for col in ['RMSE_ekf_cf', 'StdDev_ekf_cf']:
+        results_df[col] = pd.to_numeric(results_df[col], errors='coerce')
     
     # Merge with metadata table
     metadata_dict = {}
@@ -788,72 +744,71 @@ def create_summary_figure(table, results_df, out_dir):
     # Group by category and find best performers
     best_performers = []
     for cat, group in combined_df.groupby('category'):
-        # Skip categories with no valid data
-        if pd.isna(cat):
-            continue
-            
-        # Filter out rows with NaN values for RMSE_ekf_cf
-        valid_rmse_group = group.dropna(subset=['RMSE_ekf_cf'])
-        if len(valid_rmse_group) > 0:
-            # Best RMSE for EKF_CF estimator
-            best_rmse_idx = valid_rmse_group['RMSE_ekf_cf'].idxmin()
-            best_rmse_ekf_cf = valid_rmse_group.loc[best_rmse_idx]
-            best_performers.append({
-                'category': cat,
-                'label': best_rmse_ekf_cf['label'],
-                'bag': best_rmse_ekf_cf['bag'],
-                'metric': 'RMSE',
-                'estimator': 'EKF_CF',
-                'value': best_rmse_ekf_cf['RMSE_ekf_cf']
-            })
+        # Best RMSE for EKF_CF estimator
+        best_rmse_ekf_cf = group.loc[group['RMSE_ekf_cf'].idxmin()]
+        best_performers.append({
+            'category': cat,
+            'label': best_rmse_ekf_cf['label'],
+            'bag': best_rmse_ekf_cf['bag'],
+            'metric': 'RMSE',
+            'estimator': 'EKF_CF',
+            'value': best_rmse_ekf_cf['RMSE_ekf_cf']
+        })
+        
+        # Best StdDev for EKF_CF
+        best_std_ekf_cf = group.loc[group['StdDev_ekf_cf'].idxmin()]
+        best_performers.append({
+            'category': cat,
+            'label': best_std_ekf_cf['label'],
+            'bag': best_std_ekf_cf['bag'],
+            'metric': 'StdDev',
+            'estimator': 'EKF_CF',
+            'value': best_std_ekf_cf['StdDev_ekf_cf']
+        })
     
     best_df = pd.DataFrame(best_performers)
     
-    # Check if we have any valid data
-    if len(best_df) == 0:
-        print("No valid data found for summary figure")
-        return None
-    
     # Create the summary figure
-    fig, ax = plt.figure(figsize=(12, 8), dpi=DPI), plt.subplot(111)
+    fig, ax = plt.figure(figsize=(10, 8), dpi=DPI), plt.subplot(111)
     
     categories = best_df['category'].unique()
+    metrics = ['RMSE', 'StdDev']
+    estimators = ['EKF_CF']
     
     x = np.arange(len(categories))
-    width = 0.6
+    width = 0.35
     
-    # Only RMSE now
-    data = best_df[best_df['metric'] == 'RMSE']
-    values = [data[data['category'] == cat]['value'].values[0] if len(data[data['category'] == cat]) > 0 else np.nan 
-             for cat in categories]
+    for i, metric in enumerate(metrics):
+        data = best_df[best_df['metric'] == metric]
+        values = [data[data['category'] == cat]['value'].values[0] if len(data[data['category'] == cat]) > 0 else np.nan 
+                 for cat in categories]
+        
+        bars = ax.bar(x + (i-0.5)*width, values, width, 
+                    label=f"{metric} - EKF_CF", 
+                    color=f"C{i}", alpha=0.8)
+        
+        # Add value labels on top of bars
+        for bar_idx, bar in enumerate(bars):
+            height = bar.get_height()
+            if not np.isnan(height):
+                ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                       f"{height:.3f}", ha='center', va='bottom',
+                       fontsize=8, rotation=90)
     
-    bars = ax.bar(x, values, width, label='RMSE - EKF_CF', 
-                color=EKF_CF_COLOR, alpha=0.8)
-    
-    # Add value labels inside bars
-    for bar_idx, bar in enumerate(bars):
-        height = bar.get_height()
-        if not np.isnan(height):
-            ax.text(bar.get_x() + bar.get_width()/2., height/2,
-                   f"{height:.3f}", ha='center', va='center',
-                   fontsize=9, fontweight='bold', color='white')
-    
-    ax.set_ylabel('RMSE [m]', fontsize=PLOT_FONT_SIZE+1)
-    ax.set_title('Migliori risultati RMSE per categoria (EKF_CF vs Vicon)', 
-                 fontsize=PLOT_FONT_SIZE+2, fontweight='bold')
+    ax.set_ylabel('Valore metrico [m]', fontsize=PLOT_FONT_SIZE+1)
+    ax.set_title('Migliori risultati per categoria (EKF_CF vs Vicon)', fontsize=PLOT_FONT_SIZE+2)
     ax.set_xticks(x)
     ax.set_xticklabels(categories, rotation=45, ha='right', fontsize=PLOT_FONT_SIZE)
     ax.legend(fontsize=PLOT_FONT_SIZE, loc='upper left', bbox_to_anchor=(1, 1))
     ax.grid(True, linestyle=':', alpha=0.7)
-    ax.tick_params(axis='both', which='major', labelsize=PLOT_FONT_SIZE-1)
     
     plt.tight_layout()
     summary_path = out_dir / "best_performers_summary.pdf"
-    plt.savefig(summary_path, bbox_inches='tight')
+    plt.savefig(summary_path)
     
     # Also save as PNG for easy viewing
     summary_png_path = out_dir / "best_performers_summary.png"
-    plt.savefig(summary_png_path, dpi=150, bbox_inches='tight')
+    plt.savefig(summary_png_path, dpi=150)
     
     plt.close()
     
@@ -863,134 +818,104 @@ def create_summary_figure(table, results_df, out_dir):
     return summary_path
 
 # ------------------------------------------------------------------------- #
-def create_rmse_table(table, results_df, out_dir):
-    """Create a table similar to the original but with RMSE values instead of rosbag names."""
-    # Convert string errors to NaN
+def create_rmse_markdown_table(table, results_df, out_dir):
+    """Create a Markdown table with RMSE values for each rosbag, structured like the original Excel table."""
+    
+    # Convert RMSE values to numeric, handle errors
     results_df['RMSE_ekf_cf'] = pd.to_numeric(results_df['RMSE_ekf_cf'], errors='coerce')
     
-    # Create mapping from rosbag name to RMSE (convert to cm and mark failures)
-    rmse_map = {}
+    # Create a mapping from bag name to RMSE value
+    rmse_dict = {}
     for _, row in results_df.iterrows():
         bag_name = row['bag']
-        rmse_value = row['RMSE_ekf_cf']
-        if not pd.isna(rmse_value):
-            # Convert to cm
-            rmse_cm = rmse_value * 100
-            # Mark as FAIL if > 50 cm
-            if rmse_cm > 50:
-                rmse_formatted = 'FAIL'
-            else:
-                rmse_formatted = f"{rmse_cm:.2f}"
+        rmse_val = row['RMSE_ekf_cf']
+        if pd.isna(rmse_val):
+            rmse_dict[bag_name] = 'FAIL'
         else:
-            rmse_formatted = 'ERROR'
-            
-        # Remove _processed suffix for matching
-        original_name = bag_name.replace('_processed', '')
-        rmse_map[original_name] = rmse_formatted
-        # Also map with _processed suffix
-        rmse_map[bag_name] = rmse_formatted
+            # Convert to cm and check if > 50 cm
+            rmse_cm = rmse_val * 100  # Convert from meters to cm
+            if rmse_cm > 50:
+                rmse_dict[bag_name] = f'{rmse_cm:.2f} FAIL'
+            else:
+                rmse_dict[bag_name] = f'{rmse_cm:.2f}'
     
-    print(f"DEBUG: Created RMSE map with {len(rmse_map)} entries")
-    print(f"DEBUG: First 5 entries: {dict(list(rmse_map.items())[:5])}")
+    # Start building the markdown table
+    md_lines = []
+    md_lines.append("# RMSE Results Table")
+    md_lines.append("")
+    md_lines.append("**Note:** Values are in centimeters (cm). FAIL indicates RMSE > 50 cm.")
+    md_lines.append("")
     
-    # Create new table with RMSE values
-    rmse_table_data = []
+    # Create header row
+    header = "| Category | Label |"
+    separator = "|----------|-------|"
     
+    # Find the maximum number of test columns by looking at all rosbag lists
+    max_tests = 0
+    for _, row in table.iterrows():
+        if len(row['rosbags']) > max_tests:
+            max_tests = len(row['rosbags'])
+    
+    # Add test columns to header
+    for i in range(1, max_tests + 1):
+        header += f" Test {i} |"
+        separator += "-------|"
+    
+    # Add Mean RMSE column
+    header += " Mean RMSE |"
+    separator += "-----------|"
+    
+    md_lines.append(header)
+    md_lines.append(separator)
+    
+    # Process each row in the table
     for _, row in table.iterrows():
         category = row['category']
         label = row['label']
-        rosbags_list = row['rosbags']
+        rosbags = row['rosbags']
         
-        # Process each rosbag in the list
-        rmse_values = []
-        numeric_values = []  # For calculating mean
+        # Start building the row
+        md_row = f"| {category} | {label} |"
         
-        for bag_name in rosbags_list:
-            if ',' in bag_name:  # Handle multiple bags in one cell
-                bag_parts = [b.strip() for b in bag_name.split(',')]
-                rmse_parts = []
-                for part in bag_parts:
-                    if part in rmse_map:
-                        rmse_val = rmse_map[part]
-                        rmse_parts.append(str(rmse_val))
-                        # Add to numeric values for mean calculation if it's a valid number
-                        if rmse_val not in ['FAIL', 'ERROR', 'N/A']:
-                            try:
-                                numeric_values.append(float(rmse_val))
-                            except:
-                                pass
-                    else:
-                        print(f"DEBUG: No match for '{part}'")
-                        rmse_parts.append('N/A')
-                rmse_values.append(', '.join(rmse_parts))
+        # Collect RMSE values for this row
+        row_rmse_values = []
+        
+        # Add test results
+        for i in range(max_tests):
+            if i < len(rosbags):
+                bag_name = rosbags[i]
+                # Remove '_processed' suffix if present for lookup
+                lookup_name = bag_name.replace('_processed', '')
+                
+                # Try both with and without _processed suffix
+                rmse_val = rmse_dict.get(bag_name, rmse_dict.get(lookup_name, 'N/A'))
+                md_row += f" {rmse_val} |"
+                
+                # Collect numeric values for mean calculation
+                if rmse_val != 'N/A' and 'FAIL' not in rmse_val:
+                    try:
+                        row_rmse_values.append(float(rmse_val))
+                    except ValueError:
+                        pass
             else:
-                if bag_name in rmse_map:
-                    rmse_val = rmse_map[bag_name]
-                    rmse_values.append(str(rmse_val))
-                    # Add to numeric values for mean calculation if it's a valid number
-                    if rmse_val not in ['FAIL', 'ERROR', 'N/A']:
-                        try:
-                            numeric_values.append(float(rmse_val))
-                        except:
-                            pass
-                else:
-                    print(f"DEBUG: No match for '{bag_name}'")
-                    rmse_values.append('N/A')
+                md_row += " |"
         
-        # Calculate mean (excluding FAIL, ERROR, N/A)
-        if numeric_values:
-            mean_rmse = f"{np.mean(numeric_values):.2f}"
+        # Calculate mean RMSE for this row
+        if row_rmse_values:
+            mean_rmse = np.mean(row_rmse_values)
+            md_row += f" {mean_rmse:.2f} |"
         else:
-            mean_rmse = 'N/A'
+            md_row += " N/A |"
         
-        # Create row data
-        row_data = {
-            'Category': category,
-            'Label': label
-        }
-        
-        # Add test columns (up to 10 tests)
-        for i in range(10):
-            if i < len(rmse_values):
-                row_data[f'Test_{i+1}'] = rmse_values[i]
-            else:
-                row_data[f'Test_{i+1}'] = ''
-        
-        # Add mean column
-        row_data['Mean_RMSE_cm'] = mean_rmse
-        
-        rmse_table_data.append(row_data)
+        md_lines.append(md_row)
     
-    # Save as CSV
-    rmse_csv_path = out_dir / 'rmse_table.csv'
-    rmse_df = pd.DataFrame(rmse_table_data)
-    rmse_df.to_csv(rmse_csv_path, index=False)
+    # Save the markdown file
+    md_file_path = out_dir / "rmse_results_table.md"
+    with open(md_file_path, 'w') as f:
+        f.write('\n'.join(md_lines))
     
-    # Save as Markdown table
-    md_path = out_dir / 'rmse_table.md'
-    with open(md_path, 'w') as f:
-        f.write("# RMSE Results Table\n\n")
-        f.write("**Note:** Values are in centimeters (cm). FAIL indicates RMSE > 50 cm.\n\n")
-        f.write("| Category | Label |")
-        
-        for i in range(10):
-            f.write(f" Test {i+1} |")
-        f.write(" Mean RMSE |\n")
-        
-        # Header separator
-        f.write("|----------|-------|")
-        for i in range(10):
-            f.write("--------|")
-        f.write("----------|\n")
-        
-        # Data rows
-        for row_data in rmse_table_data:
-            f.write(f"| {row_data['Category']} | {row_data['Label']} |")
-            for i in range(10):
-                f.write(f" {row_data[f'Test_{i+1}']} |")
-            f.write(f" {row_data['Mean_RMSE_cm']} |\n")
-    
-    return rmse_csv_path, md_path
+    print(f"RMSE Markdown table saved to {md_file_path}")
+    return md_file_path
 
 # ------------------------------------------------------------------------- #
 def main():
@@ -1025,8 +950,12 @@ def main():
 
     # Global summary
     summary = pd.DataFrame(results,
-                           columns=['bag','RMSE_ekf_cf','csv','plot','bag_dir'])
+                           columns=['bag','RMSE_ekf_cf','StdDev_ekf_cf','csv','plot','bag_dir'])
     summary.to_csv(out_dir / 'summary.csv', index=False)
+    
+    # Create RMSE Markdown table
+    rmse_md_path = create_rmse_markdown_table(table, summary, out_dir)
+    print(f"RMSE Markdown table saved to {rmse_md_path}")
     
     # Create comprehensive category summary figure
     category_summary_path = create_category_summary_figure(table, summary, out_dir)
@@ -1035,21 +964,9 @@ def main():
     
     # Create summary figure with best performers per category
     summary_fig_path = create_summary_figure(table, summary, out_dir)
-    if summary_fig_path:
-        print(f"Summary figure saved to {summary_fig_path}")
-    else:
-        print("No summary figure created due to lack of valid data")
-    
-    # Create RMSE table
-    rmse_table_path, rmse_md_path = create_rmse_table(table, summary, out_dir)
-    print(f"RMSE table saved to {rmse_table_path} and {rmse_md_path}")
+    print(f"Summary figure saved to {summary_fig_path}")
     
     print("Results saved to", out_dir)
-    print("\nGenerated files:")
-    print("- Individual rosbag plots (PDF + PNG)")
-    print("- Category summary comprehensive figure")
-    print("- Best performers summary figure") 
-    print("- RMSE table (CSV + Markdown)")
 
 if __name__ == '__main__':
     main()
